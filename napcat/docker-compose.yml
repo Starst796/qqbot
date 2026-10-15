@@ -1,0 +1,38 @@
+# ============================================================================
+# NapCatQQ 容器编排
+#
+# 用途：托管 QQ 小号（NTQQ 无头进程），对外提供 OneBot 11 协议。
+# 说明：
+#   * 不用 host 网络，而是把端口只绑定到宿主回环（127.0.0.1）——这样公网无法
+#     直连 WebUI/OneBot，NoneBot（宿主进程）仍能连 ws://127.0.0.1:3001。
+#   * 容器内 NapCat 的 OneBot WS 服务器需监听 0.0.0.0:3001，才能经端口映射出去。
+#   * 挂载卷放在 ./data（已 gitignore）：包含 QQ 登录态与 NapCat 配置，
+#     含隐私，切勿提交仓库、切勿删除（删了要重新扫码登录）。
+#
+# 常用命令（在本目录执行）：
+#   docker compose up -d          启动
+#   docker compose logs -f       看日志
+#   docker compose pull && docker compose up -d   升级镜像
+#   docker compose down           停止
+# ============================================================================
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: qqbot-napcat
+    restart: unless-stopped
+    environment:
+      # 容器内运行 NapCat 的用户 UID/GID（与挂载卷属主一致即可）
+      - NAPCAT_UID=1000
+      - NAPCAT_GID=1000
+      - TZ=Asia/Shanghai
+    ports:
+      # 仅绑定宿主回环：公网无法直连，安全边界交给 token + 防火墙
+      - "127.0.0.1:6099:6099"   # WebUI
+      - "127.0.0.1:3001:3001"   # OneBot v11 正向 WS（NoneBot 从这里连）
+    volumes:
+      # NapCat 配置（OneBot 连接、token 等）
+      - ./data/config:/app/napcat/config
+      # QQ 登录态与缓存
+      - ./data/QQ:/app/.config/QQ
+      # NapCat 日志（便于排查）
+      - ./data/logs:/app/napcat/logs

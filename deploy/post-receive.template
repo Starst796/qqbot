@@ -1,0 +1,48 @@
+#!/bin/bash
+# ============================================================================
+# 部署钩子 —— 由 deploy/install.sh 渲染安装到 <裸仓库>/hooks/post-receive
+# push 到部署分支后：
+#   1. 检出到运行目录；2. requirements 变化则同步依赖；3. 重启服务
+# 注意：bot/.env 与 venv 为未跟踪文件，checkout -f 不会动它们。
+# ============================================================================
+set -euo pipefail
+
+BRANCH=__BRANCH__
+WEB_PATH=__APP_DIR__
+VENV=__VENV_DIR__
+SERVICE=__SERVICE_NAME__
+
+GIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+while read -r oldrev newrev refname; do
+    if [ "$refname" != "refs/heads/$BRANCH" ]; then
+        echo "ℹ️  跳过非部署分支：$refname"
+        continue
+    fi
+
+    echo "→ 检出 $BRANCH 到 $WEB_PATH"
+    git --work-tree="$WEB_PATH" --git-dir="$GIT_DIR" checkout -f "$BRANCH"
+
+    REQ_FILE="$WEB_PATH/bot/requirements.txt"
+    if [ -f "$REQ_FILE" ]; then
+        REQ_HASH="$(sha256sum "$REQ_FILE" | awk '{print $1}')"
+        HASH_FILE="$GIT_DIR/requirements.sha256"
+        if [ ! -f "$HASH_FILE" ] || [ "$(cat "$HASH_FILE")" != "$REQ_HASH" ]; then
+            echo "→ requirements.txt 有变化，同步依赖"
+            "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REQ_FILE"
+            echo "$REQ_HASH" > "$HASH_FILE"
+        else
+            echo "→ 依赖无变化，跳过 pip"
+        fi
+    fi
+
+    echo "→ 重启 $SERVICE.service"
+    if sudo -n /bin/systemctl restart "$SERVICE.service" 2>/dev/null; then
+        echo "→ 服务已重启"
+    else
+        echo "⚠️  自动重启失败（可能缺少 sudoers 授权），请手动执行："
+        echo "    sudo systemctl restart $SERVICE.service"
+    fi
+done
+
+echo "✅ 已更新到最新提交"

@@ -1,0 +1,3 @@
+# 允许 ubuntu 用户免密重启 qqbot 服务（供 git 部署钩子调用）
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart qqbot.service
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl status qqbot.service

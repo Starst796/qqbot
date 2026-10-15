@@ -1,0 +1,36 @@
+# ============================================================================
+# NoneBot2 机器人服务单元（由 deploy/install.sh 渲染安装）
+# 渲染变量：__APP_DIR__ __VENV_DIR__ __DATA_DIR__ __APP_USER__ __SERVICE_NAME__ __DOMAIN__
+# ============================================================================
+[Unit]
+Description=__DOMAIN__ QQ bot (NoneBot2 + DeepSeek, OneBot 由 NapCat 容器提供)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__/bot
+
+# .env 为未跟踪文件，git checkout -f 不会覆盖；缺失时也不报错
+EnvironmentFile=-__APP_DIR__/bot/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# 模型/嵌入缓存写入数据目录，避免与 ProtectHome 冲突
+Environment=HF_HOME=__DATA_DIR__/hf
+
+ExecStart=__VENV_DIR__/bin/python bot.py
+
+Restart=always
+RestartSec=3
+
+# 加固：仅数据目录可写，其余（含家目录）只读
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__DATA_DIR__
+
+[Install]
+WantedBy=multi-user.target

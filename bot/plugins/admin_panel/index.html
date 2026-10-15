@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QQ 机器人 · 管理面板</title>
+<style>
+  :root { --bg:#0f1216; --card:#171c22; --line:#2a323c; --fg:#e6ebf2; --mut:#8b98a8; --acc:#4c8dff; --ok:#3fb950; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .badge { margin-left:auto; color:var(--mut); font-size:12px; }
+  main { max-width:960px; margin:0 auto; padding:24px; display:grid; gap:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
+  .card h2 { font-size:14px; margin:0 0 14px; color:var(--acc); font-weight:600; }
+  .row { display:grid; grid-template-columns:220px 1fr; gap:12px; align-items:center; margin-bottom:12px; }
+  .row label { color:var(--mut); }
+  input[type=text], input[type=number], textarea, select {
+    width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:8px 10px; font:inherit;
+  }
+  textarea { min-height:96px; resize:vertical; font-family:ui-monospace,Consolas,monospace; }
+  input[type=checkbox] { width:18px; height:18px; }
+  .actions { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 40%); padding-top:16px; display:flex; gap:12px; align-items:center; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:10px 18px; font:inherit; cursor:pointer; }
+  button.ghost { background:#232c37; }
+  button:disabled { opacity:.5; cursor:default; }
+  #toast { color:var(--ok); }
+  #toast.err { color:#f85149; }
+  .stats { display:flex; gap:24px; flex-wrap:wrap; color:var(--mut); }
+  .stats b { color:var(--fg); font-size:18px; display:block; }
+  .hint { color:var(--mut); font-size:12px; margin:-6px 0 12px 232px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>QQ 机器人 · 管理面板</h1>
+  <span class="badge" id="meta">加载中…</span>
+</header>
+<main>
+  <section class="card">
+    <h2>运行统计</h2>
+    <div class="stats" id="stats">—</div>
+  </section>
+
+  <section class="card">
+    <h2>总开关与模型</h2>
+    <div class="row"><label>启用机器人</label><input type="checkbox" id="enabled" /></div>
+    <div class="row"><label>模型名</label><input type="text" id="model" /></div>
+    <div class="row"><label>温度 temperature</label><input type="number" id="temperature" step="0.1" min="0" max="2" /></div>
+    <div class="row"><label>最大输出 tokens</label><input type="number" id="max_tokens" min="1" /></div>
+    <div class="row"><label>启用思考模式</label><input type="checkbox" id="thinking" /></div>
+    <div class="row"><label>系统提示词</label><textarea id="system_prompt"></textarea></div>
+  </section>
+
+  <section class="card">
+    <h2>触发</h2>
+    <div class="row"><label>群内需 @ 机器人</label><input type="checkbox" id="trigger.require_at_in_group" /></div>
+    <div class="row"><label>私聊直接回复</label><input type="checkbox" id="trigger.reply_private" /></div>
+    <div class="row"><label>额外前缀（逗号分隔）</label><input type="text" id="trigger.prefixes" data-csv="1" /></div>
+  </section>
+
+  <section class="card">
+    <h2>限流</h2>
+    <div class="row"><label>同群最小间隔(秒)</label><input type="number" id="rate_limit.per_group_seconds" min="0" /></div>
+    <div class="row"><label>同用户冷却(秒)</label><input type="number" id="rate_limit.per_user_seconds" min="0" /></div>
+    <div class="row"><label>全局并发上限</label><input type="number" id="rate_limit.global_max_concurrent" min="1" /></div>
+  </section>
+
+  <section class="card">
+    <h2>风格注入（RAG）</h2>
+    <div class="row"><label>启用历史风格</label><input type="checkbox" id="style.enabled" /></div>
+    <div class="row"><label>检索条数 top-k</label><input type="number" id="style.top_k" min="0" /></div>
+    <div class="row"><label>片段长度上限</label><input type="number" id="style.max_chars" min="0" /></div>
+    <div class="row"><label>上下文轮数</label><input type="number" id="style.context_turns" min="0" /></div>
+  </section>
+
+  <section class="card">
+    <h2>存储与检索</h2>
+    <div class="row"><label>全量落库群消息</label><input type="checkbox" id="storage.log_all_group_messages" /></div>
+    <div class="row"><label>记录私聊</label><input type="checkbox" id="storage.log_private" /></div>
+    <div class="row"><label>启用语义检索</label><input type="checkbox" id="retrieval.enabled" /></div>
+    <div class="row"><label>embedding 模型</label><input type="text" id="retrieval.embed_model" /></div>
+    <p class="hint">内存紧张可将 <code>BAAI/bge-m3</code> 换成 <code>BAAI/bge-small-zh-v1.5</code>（重启生效）。</p>
+  </section>
+
+  <section class="card">
+    <h2>拟人化</h2>
+    <div class="row"><label>最短打字延迟(ms)</label><input type="number" id="humanize.min_delay_ms" min="0" /></div>
+    <div class="row"><label>最长打字延迟(ms)</label><input type="number" id="humanize.max_delay_ms" min="0" /></div>
+    <div class="row"><label>长回复分段</label><input type="checkbox" id="humanize.split_long" /></div>
+  </section>
+
+  <div class="actions">
+    <button id="save">保存配置</button>
+    <button class="ghost" id="reload">保存并失效缓存</button>
+    <span id="toast"></span>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let CONFIG = {};
+
+function setByPath(obj, path, value) {
+  const parts = path.split(".");
+  let node = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (typeof node[parts[i]] !== "object" || node[parts[i]] === null) node[parts[i]] = {};
+    node = node[parts[i]];
+  }
+  node[parts[parts.length - 1]] = value;
+}
+function getByPath(obj, path) {
+  return path.split(".").reduce((n, p) => (n == null ? undefined : n[p]), obj);
+}
+
+function fillForm(cfg) {
+  CONFIG = cfg;
+  document.querySelectorAll("[id]").forEach((el) => {
+    const path = el.id;
+    if (!path.includes(".") && !["enabled","model","temperature","max_tokens","thinking","system_prompt"].includes(path)) return;
+    const val = getByPath(cfg, path);
+    if (val === undefined) return;
+    if (el.type === "checkbox") el.checked = !!val;
+    else if (el.dataset.csv) el.value = Array.isArray(val) ? val.join(",") : val;
+    else el.value = val;
+  });
+}
+
+function collectForm() {
+  const out = JSON.parse(JSON.stringify(CONFIG));
+  document.querySelectorAll("[id]").forEach((el) => {
+    const path = el.id;
+    if (!path.includes(".") && !["enabled","model","temperature","max_tokens","thinking","system_prompt"].includes(path)) return;
+    let value;
+    if (el.type === "checkbox") value = el.checked;
+    else if (el.dataset.csv) value = el.value.split(",").map(s => s.trim()).filter(Boolean);
+    else if (el.type === "number") value = el.value === "" ? 0 : Number(el.value);
+    else value = el.value;
+    setByPath(out, path, value);
+  });
+  return out;
+}
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = isErr ? "err" : "";
+  setTimeout(() => { if (t.textContent === msg) t.textContent = ""; }, 4000);
+}
+
+async function loadConfig() {
+  const r = await fetch("/api/config");
+  const cfg = await r.json();
+  fillForm(cfg);
+  $("meta").textContent = "配置已加载";
+}
+
+async function loadStats() {
+  const r = await fetch("/api/stats");
+  const d = await r.json();
+  const s = d.stats || {};
+  $("stats").innerHTML =
+    `<div><b>${s.messages ?? 0}</b>消息</div>` +
+    `<div><b>${s.vectors ?? 0}</b>向量</div>` +
+    `<div><b>${s.groups ?? 0}</b>群</div>`;
+}
+
+async function save(reload) {
+  $("save").disabled = true;
+  try {
+    const r = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectForm()),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "保存失败");
+    fillForm(d.config);
+    if (reload) await fetch("/api/reload", { method: "POST" });
+    toast("已保存" + (reload ? "，缓存已失效" : ""));
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    $("save").disabled = false;
+  }
+}
+
+$("save").onclick = () => save(false);
+$("reload").onclick = () => save(true);
+loadConfig();
+loadStats();
+setInterval(loadStats, 15000);
+</script>
+</body>
+</html>

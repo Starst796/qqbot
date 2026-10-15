@@ -1,0 +1,28 @@
+[project]
+name = "qqbot"
+version = "0.1.0"
+description = "基于 NoneBot2 + NapCat + DeepSeek 的 QQ 群聊 AI 机器人"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "nonebot2[fastapi]>=2.3.0",
+    "nonebot-adapter-onebot>=2.4.0",
+    "openai>=1.40.0",
+    "numpy>=1.26.0",
+    # 语义检索（embedding）。若服务器内存紧张可移除，程序会自动降级为 FTS5 关键词检索。
+    "sentence-transformers>=3.0.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 让 nonebot 以「包」形式加载 plugins，便于相对导入
+packages = ["qqbot_core", "plugins"]
+
+[tool.nonebot]
+# 插件在 bot.py 中显式加载，这里仅做声明，方便 `nb` 命令行工具识别
+adapters = ["nonebot.adapters.onebot.v11"]
+plugins = []
+plugin_dirs = ["plugins"]

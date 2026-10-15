@@ -1,0 +1,28 @@
+# 运行期数据（数据库、向量、日志）
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# NoneBot 运行产物
+/nonebot/
+.nonebot/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境
+/venv/
+.venv/
+
+# 配置与密钥（部署时在服务器上放置，不进仓库）
+.env
+bot/.env
+
+# NapCat 容器挂载卷（登录态、配置，体积大且含隐私）
+napcat/data/
+napcat/QQ/
+
+# 部署产物
+deploy/out/
