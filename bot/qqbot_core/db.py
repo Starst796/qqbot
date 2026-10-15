@@ -248,3 +248,117 @@ def stats() -> dict[str, Any]:
         "last_message_ts": float(last) if last else None,
         "db_path": str(DB_PATH),
     }
+
+
+# --------------------------------------------------------------------------- #
+# 上下文 / 数据管理（供管理面板使用）
+# --------------------------------------------------------------------------- #
+def _rebuild_fts() -> None:
+    """messages_fts 是 external content 表，主表删改后必须 rebuild 才保持一致。"""
+    if not _fts_enabled:
+        return
+    try:
+        conn = connect()
+        conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _drop_orphan_embeddings() -> None:
+    conn = connect()
+    conn.execute("DELETE FROM embeddings WHERE msg_id NOT IN (SELECT id FROM messages)")
+    conn.commit()
+
+
+def list_groups() -> list[dict[str, Any]]:
+    """列出有消息记录的群及其统计（消息数 / 机器人发言数 / 上下文条数 / 最后时间）。"""
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT group_id, COUNT(*) AS messages, SUM(is_bot) AS bot_messages, "
+                "MAX(ts) AS last_ts FROM messages WHERE group_id IS NOT NULL "
+                "GROUP BY group_id ORDER BY last_ts DESC"
+            )
+        )
+        sess = {
+            r["conv_key"]: int(r["c"])
+            for r in conn.execute(
+                "SELECT conv_key, COUNT(*) AS c FROM sessions GROUP BY conv_key"
+            )
+        }
+    return [
+        {
+            "group_id": r["group_id"],
+            "messages": int(r["messages"]),
+            "bot_messages": int(r["bot_messages"] or 0),
+            "last_ts": float(r["last_ts"]) if r["last_ts"] else None,
+            "sessions": sess.get(f"group:{r['group_id']}", 0),
+        }
+        for r in rows
+    ]
+
+
+def recent_messages(
+    group_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    """按时间倒序取某群最近的消息，供面板浏览/单条删除。"""
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT id, user_id, nickname, content, ts, is_bot FROM messages "
+                "WHERE group_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (group_id, max(1, limit), max(0, offset)),
+            )
+        )
+    return [dict(r) for r in rows]
+
+
+def delete_messages(
+    *,
+    group_id: str | None = None,
+    user_id: str | None = None,
+    ids: list[int] | None = None,
+) -> int:
+    """删除消息（含其向量）。三者都不给 = 清空全部。返回删除条数。"""
+    conn = connect()
+    with _lock:
+        if ids:
+            marks = ",".join("?" * len(ids))
+            cur = conn.execute(
+                f"DELETE FROM messages WHERE id IN ({marks})", list(ids)
+            )
+        elif group_id is not None:
+            cur = conn.execute("DELETE FROM messages WHERE group_id = ?", (group_id,))
+        elif user_id is not None:
+            cur = conn.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
+        else:
+            cur = conn.execute("DELETE FROM messages")
+        removed = int(cur.rowcount or 0)
+        conn.commit()
+        _drop_orphan_embeddings()
+        _rebuild_fts()
+    return removed
+
+
+def clear_sessions(
+    *, group_id: str | None = None, user_id: str | None = None
+) -> int:
+    """清空对话上下文（不影响聊天记录语料）。都不给 = 清空全部。"""
+    conn = connect()
+    with _lock:
+        if group_id is not None:
+            cur = conn.execute(
+                "DELETE FROM sessions WHERE conv_key = ?", (f"group:{group_id}",)
+            )
+        elif user_id is not None:
+            cur = conn.execute(
+                "DELETE FROM sessions WHERE conv_key = ?", (f"user:{user_id}",)
+            )
+        else:
+            cur = conn.execute("DELETE FROM sessions")
+        removed = int(cur.rowcount or 0)
+        conn.commit()
+    return removed

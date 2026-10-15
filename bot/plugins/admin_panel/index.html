@@ -31,6 +31,17 @@
   .stats { display:flex; gap:24px; flex-wrap:wrap; color:var(--mut); }
   .stats b { color:var(--fg); font-size:18px; display:block; }
   .hint { color:var(--mut); font-size:12px; margin:-6px 0 12px 232px; }
+  .hint2 { color:var(--mut); font-size:12px; margin:12px 0 0; }
+  .actions-inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:14px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; }
+  .mini { padding:4px 9px; font-size:12px; margin-right:4px; }
+  .ghost.danger { background:#5c2626; }
+  .msg { padding:7px 4px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:flex-start; font-size:13px; }
+  .msg .who { color:var(--acc); white-space:nowrap; }
+  .msg .txt { flex:1; word-break:break-all; }
+  .msg .t { color:var(--mut); white-space:nowrap; font-size:12px; }
 </style>
 </head>
 <body>
@@ -90,6 +101,37 @@
     <div class="row"><label>最短打字延迟(ms)</label><input type="number" id="humanize.min_delay_ms" min="0" /></div>
     <div class="row"><label>最长打字延迟(ms)</label><input type="number" id="humanize.max_delay_ms" min="0" /></div>
     <div class="row"><label>长回复分段</label><input type="checkbox" id="humanize.split_long" /></div>
+  </section>
+
+  <section class="card">
+    <h2>服务控制</h2>
+    <div class="actions-inline">
+      <button class="ghost" id="btnReload">重载配置</button>
+      <button class="ghost" id="btnRestart">重启服务</button>
+      <span class="hint2" id="svcState"></span>
+    </div>
+    <p class="hint2">「重载配置」立即丢弃配置/检索缓存，不中断服务（限流、提示词、开关改完即生效）；
+      「重启服务」重启进程（约 3 秒，systemd 自动拉起），用于切换 embedding 模型等需要重新加载的场景。</p>
+  </section>
+
+  <section class="card">
+    <h2>上下文与数据管理</h2>
+    <div class="actions-inline">
+      <button class="ghost" id="btnGroups">刷新群列表</button>
+      <input type="text" id="purgeUser" placeholder="输入 QQ 号" style="max-width:150px" />
+      <button class="ghost" id="btnPurgeUser">清除该用户数据</button>
+      <button class="ghost danger" id="btnClearAll">清空全部记录</button>
+    </div>
+    <table id="groupsTable">
+      <thead><tr><th>群号</th><th>消息</th><th>上下文</th><th>最后消息</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="msgBox" style="display:none;margin-top:18px">
+      <h2 id="msgTitle"></h2>
+      <div id="msgList"></div>
+    </div>
+    <p class="hint2">「重置上下文」只清该群的对话记忆（保留语料）；「清空记录」同时删除该群聊天记录与向量，
+      用于清理污染数据（删除后 FTS 索引会自动重建）。</p>
   </section>
 
   <div class="actions">
@@ -193,6 +235,135 @@ $("reload").onclick = () => save(true);
 loadConfig();
 loadStats();
 setInterval(loadStats, 15000);
+
+// ---------------- 服务控制 ----------------
+$("btnReload").onclick = async () => {
+  try {
+    const r = await fetch("/api/reload", { method: "POST" });
+    const d = await r.json();
+    if (!d.ok) throw new Error("重载失败");
+    if (d.config) fillForm(d.config);
+    toast("配置已重载");
+  } catch (e) { toast(e.message, true); }
+};
+
+$("btnRestart").onclick = async () => {
+  if (!confirm("确定重启机器人服务？约 3 秒后自动恢复。")) return;
+  $("svcState").textContent = "正在重启…（6 秒后自动刷新页面）";
+  try { await fetch("/api/restart", { method: "POST" }); } catch (e) { /* 连接会断，属正常 */ }
+  setTimeout(() => location.reload(), 6000);
+};
+
+// ---------------- 上下文 / 数据管理 ----------------
+function fmtTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+async function loadGroups() {
+  const r = await fetch("/api/context/groups");
+  const d = await r.json();
+  const tb = document.querySelector("#groupsTable tbody");
+  tb.innerHTML = "";
+  if (!d.groups || !d.groups.length) {
+    tb.innerHTML = '<tr><td colspan="5" style="color:var(--mut)">暂无数据</td></tr>';
+    return;
+  }
+  for (const g of d.groups) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${g.group_id}</td>` +
+      `<td>${g.messages}</td>` +
+      `<td>${g.sessions}</td>` +
+      `<td>${fmtTime(g.last_ts)}</td>` +
+      `<td>` +
+      `<button class="ghost mini" data-act="view" data-g="${g.group_id}">查看</button>` +
+      `<button class="ghost mini" data-act="sessions" data-g="${g.group_id}">重置上下文</button>` +
+      `<button class="ghost mini" data-act="messages" data-g="${g.group_id}">清空记录</button>` +
+      `</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+document.querySelector("#groupsTable").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button");
+  if (!btn) return;
+  const gid = btn.dataset.g;
+  if (btn.dataset.act === "view") return viewMessages(gid);
+  if (btn.dataset.act === "sessions") {
+    if (!confirm(`重置群 ${gid} 的对话上下文？（聊天记录保留）`)) return;
+    await clearScope({ scope: "sessions", group_id: gid });
+  }
+  if (btn.dataset.act === "messages") {
+    if (!confirm(`清空群 ${gid} 的全部聊天记录与向量？不可恢复！`)) return;
+    await clearScope({ scope: "both", group_id: gid });
+    $("msgBox").style.display = "none";
+  }
+});
+
+async function viewMessages(gid) {
+  const r = await fetch(`/api/context/messages?group_id=${encodeURIComponent(gid)}&limit=60`);
+  const d = await r.json();
+  const list = d.messages || [];
+  $("msgTitle").textContent = `群 ${gid} · 最近 ${list.length} 条`;
+  const box = $("msgList");
+  box.innerHTML = list.length ? "" : '<div class="msg" style="color:var(--mut)">无</div>';
+  for (const m of list) {
+    const div = document.createElement("div");
+    div.className = "msg";
+    const who = m.nickname ? `${m.nickname}(${m.user_id})` : m.user_id;
+    div.innerHTML =
+      `<span class="who">${m.is_bot ? "[bot] " : ""}${escapeHtml(who)}</span>` +
+      `<span class="txt">${escapeHtml(m.content)}</span>` +
+      `<span class="t">${fmtTime(m.ts)}</span>` +
+      `<button class="ghost mini" data-del="${m.id}">删除</button>`;
+    box.appendChild(div);
+  }
+  $("msgBox").style.display = "block";
+}
+
+$("msgList").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-del]");
+  if (!btn) return;
+  if (!confirm("删除这一条消息？")) return;
+  await clearScope({ scope: "messages", ids: [Number(btn.dataset.del)] });
+  btn.closest(".msg").remove();
+});
+
+async function clearScope(payload) {
+  const r = await fetch("/api/context/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json();
+  if (!d.ok) return toast("清理失败", true);
+  toast(`已删消息 ${d.deleted_messages ?? 0} 条 / 上下文 ${d.cleared_sessions ?? 0} 条`);
+  await loadGroups();
+  await loadStats();
+}
+
+$("btnGroups").onclick = loadGroups;
+$("btnPurgeUser").onclick = async () => {
+  const uid = $("purgeUser").value.trim();
+  if (!uid) return toast("请先输入 QQ 号", true);
+  if (!confirm(`删除用户 ${uid} 的全部聊天记录与上下文？`)) return;
+  await clearScope({ scope: "both", user_id: uid });
+};
+$("btnClearAll").onclick = async () => {
+  if (!confirm("清空【所有群】的聊天记录与上下文？不可恢复！")) return;
+  if (!confirm("再次确认：真的要清空全部数据吗？")) return;
+  await clearScope({ scope: "both" });
+  $("msgBox").style.display = "none";
+};
+
+loadGroups();
 </script>
 </body>
 </html>

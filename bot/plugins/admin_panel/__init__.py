@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 from pathlib import Path
 
 # 必须在模块顶层导入：FastAPI 用 get_type_hints() 在「模块全局作用域」解析注解，
@@ -31,6 +34,15 @@ _PANEL_HTML = Path(__file__).resolve().parent / "index.html"
 
 def _json(payload, status: int = 200):
     return JSONResponse(payload, status_code=status)
+
+
+def _schedule_restart(delay: float = 1.0) -> None:
+    """延迟向自身发 SIGTERM，由 systemd（unit 里 Restart=always）拉起。
+
+    这样无需 sudo，也不与 NoNewPrivileges=true 冲突。
+    """
+    loop = asyncio.get_event_loop()
+    loop.call_later(delay, lambda: os.kill(os.getpid(), signal.SIGTERM))
 
 
 def _register(app) -> None:
@@ -64,13 +76,74 @@ def _register(app) -> None:
 
     @app.post("/api/reload")
     async def _reload():
+        """软重载：丢弃配置与检索缓存，不重启进程。"""
+        config.load(force=True)
         try:
             from plugins.rag import invalidate
 
             invalidate()
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"admin_panel: 失效缓存失败：{exc}")
-        return _json({"ok": True})
+        logger.info("admin_panel: 配置已重载")
+        return _json({"ok": True, "config": config.load(force=True)})
+
+    @app.post("/api/restart")
+    async def _restart():
+        """硬重启：先回响应，约 1 秒后优雅退出，systemd 自动拉起。"""
+        _schedule_restart()
+        logger.info("admin_panel: 已请求重启服务")
+        return _json({"ok": True, "message": "服务将在约 1 秒后重启"})
+
+    # ---- 上下文 / 数据管理 ----
+    @app.get("/api/context/groups")
+    async def _ctx_groups():
+        return _json({"ok": True, "groups": db.list_groups()})
+
+    @app.get("/api/context/messages")
+    async def _ctx_messages(group_id: str, limit: int = 50, offset: int = 0):
+        return _json(
+            {"ok": True, "messages": db.recent_messages(group_id, limit, offset)}
+        )
+
+    @app.post("/api/context/clear")
+    async def _ctx_clear(request: Request):
+        """scope: messages | sessions | both；可按群、按用户或按消息 id 清理。"""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        scope = str(body.get("scope", "both"))
+        group_id = str(body["group_id"]) if body.get("group_id") else None
+        user_id = str(body["user_id"]) if body.get("user_id") else None
+        raw_ids = body.get("ids")
+        ids = (
+            [int(i) for i in raw_ids if str(i).isdigit()]
+            if isinstance(raw_ids, list)
+            else None
+        )
+
+        deleted = cleared = 0
+        if scope in ("messages", "both"):
+            deleted = db.delete_messages(group_id=group_id, user_id=user_id, ids=ids)
+        if scope in ("sessions", "both"):
+            cleared = db.clear_sessions(group_id=group_id, user_id=user_id)
+        try:
+            from plugins.rag import invalidate
+
+            invalidate(group_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+        logger.info(
+            f"admin_panel: 清理 scope={scope} group={group_id} user={user_id} "
+            f"ids={ids} -> 消息 {deleted} / 上下文 {cleared}"
+        )
+        return _json(
+            {"ok": True, "deleted_messages": deleted, "cleared_sessions": cleared}
+        )
 
 
 @driver.on_startup
