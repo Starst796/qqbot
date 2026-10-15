@@ -15,6 +15,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# 必须在模块顶层导入：FastAPI 用 get_type_hints() 在「模块全局作用域」解析注解，
+# 若在函数内部才 import，注解里的 Request/HTMLResponse 会解析失败，
+# 导致 request 被当成查询参数 → POST 一律 422。
+from fastapi import Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from nonebot import get_driver, logger
 
 from qqbot_core import config, db
@@ -25,14 +30,10 @@ _PANEL_HTML = Path(__file__).resolve().parent / "index.html"
 
 
 def _json(payload, status: int = 200):
-    from fastapi.responses import JSONResponse
-
     return JSONResponse(payload, status_code=status)
 
 
 def _register(app) -> None:
-    from fastapi import Request
-    from fastapi.responses import HTMLResponse
 
     @app.get("/", response_class=HTMLResponse)
     async def _index() -> HTMLResponse:
