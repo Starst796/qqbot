@@ -19,6 +19,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 # 模型/嵌入缓存写入数据目录，避免与 ProtectHome 冲突
 Environment=HF_HOME=__DATA_DIR__/hf
+# HuggingFace 在国内不可达，走镜像站下载 embedding 模型（首次启动会拉取 bge-m3）
+Environment=HF_ENDPOINT=https://hf-mirror.com
 
 ExecStart=__VENV_DIR__/bin/python bot.py
 
