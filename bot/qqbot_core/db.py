@@ -578,3 +578,44 @@ def clear_sessions(
         removed = int(cur.rowcount or 0)
         conn.commit()
     return removed
+
+
+# --------------------------------------------------------------------------- #
+# 批量导入（历史聊天记录导入用）
+# --------------------------------------------------------------------------- #
+def message_keys(group_id: str) -> set[tuple[str, str, int]]:
+    """某群已有消息的 (user_id, content, 秒级 ts) 集合，供导入去重。"""
+    conn = connect()
+    with _lock:
+        rows = conn.execute(
+            "SELECT user_id, content, ts FROM messages WHERE group_id = ?",
+            (group_id,),
+        )
+        return {(r["user_id"], r["content"], round(float(r["ts"]))) for r in rows}
+
+
+def add_messages_bulk(rows: list[dict[str, Any]]) -> int:
+    """批量插入消息；FTS 索引在末尾统一 rebuild（比逐条写快得多）。"""
+    if not rows:
+        return 0
+    payload = [
+        (
+            r.get("group_id"),
+            str(r.get("user_id") or ""),
+            r.get("nickname"),
+            str(r.get("content") or ""),
+            float(r.get("ts") or time.time()),
+            1 if r.get("is_bot") else 0,
+        )
+        for r in rows
+    ]
+    conn = connect()
+    with _lock:
+        conn.executemany(
+            "INSERT INTO messages(group_id, user_id, nickname, content, ts, is_bot) "
+            "VALUES (?,?,?,?,?,?)",
+            payload,
+        )
+        conn.commit()
+        _rebuild_fts()
+    return len(payload)
