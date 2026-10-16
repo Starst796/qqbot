@@ -67,9 +67,30 @@
 
   <section class="card">
     <h2>触发</h2>
+    <div class="row"><label>触发方式</label>
+      <select id="trigger.mode">
+        <option value="at">at —— 仅 @机器人 / 命中前缀</option>
+        <option value="semantic">semantic —— 群内任意消息先过接话判定</option>
+      </select>
+    </div>
     <div class="row"><label>群内需 @ 机器人</label><input type="checkbox" id="trigger.require_at_in_group" /></div>
     <div class="row"><label>私聊直接回复</label><input type="checkbox" id="trigger.reply_private" /></div>
     <div class="row"><label>额外前缀（逗号分隔）</label><input type="text" id="trigger.prefixes" data-csv="1" /></div>
+    <div class="row"><label>机器人昵称/别名（逗号分隔）</label><input type="text" id="trigger.aliases" data-csv="1" /></div>
+    <div class="row"><label>判定上下文条数</label><input type="number" id="trigger.semantic.context_messages" min="1" /></div>
+    <div class="row"><label>判定每分钟上限(每群)</label><input type="number" id="trigger.semantic.max_per_minute" min="0" /></div>
+    <p class="hint">semantic 模式下每条群消息都会多一次极小成本的判定调用，成本随群活跃度上升；
+      「群内需 @ 机器人」仅在 at 模式下生效。</p>
+  </section>
+
+  <section class="card">
+    <h2>读图</h2>
+    <div class="row"><label>启用读图</label><input type="checkbox" id="vision.enabled" /></div>
+    <div class="row"><label>单条最多读几张</label><input type="number" id="vision.max_images" min="1" /></div>
+    <div class="row"><label>单张大小上限(MB)</label><input type="number" id="vision.max_mb" step="0.5" min="0.1" /></div>
+    <div class="row"><label>单张下载超时(秒)</label><input type="number" id="vision.timeout_sec" min="1" /></div>
+    <p class="hint">图片会下载后内联给模型，模型必须支持图片输入（<code>deepseek-flash</code> 支持，
+      <code>deepseek-v4-pro</code> 不支持）。</p>
   </section>
 
   <section class="card">

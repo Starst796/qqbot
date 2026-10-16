@@ -1,8 +1,9 @@
 """msg_store：全量落库群消息（RAG 语料来源）。
 
 * 以最低优先级、不阻断的 matcher 记录所有消息；是否记录受配置控制。
-* 只保存纯文本（`get_plaintext()` 会剥掉 CQ 码、图片/表情等），
-  避免把二进制/占位符写进语料。
+* 文本按原样保存；图片/表情等非文本段折算为 `[图片]` 一类占位符，
+  这样纯图片消息不会整条丢失，含图消息也保留"这里有一张图"的信息。
+* 占位符没有语义，落库时标记为无需向量化，避免污染检索语料。
 * 真正耗时的向量化由 rag 插件的后台任务完成，这里只做快速入库。
 """
 
@@ -12,6 +13,7 @@ from nonebot import on_message
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 
 from qqbot_core import config, db
+from qqbot_core.media import placeholders
 
 matcher = on_message(priority=100, block=False)
 
@@ -20,7 +22,8 @@ matcher = on_message(priority=100, block=False)
 async def _store(event: MessageEvent) -> None:
     storage = config.get("storage", {}) or {}
     text = event.get_plaintext().strip()
-    if not text:
+    content = " ".join(part for part in (text, placeholders(event.message)) if part)
+    if not content:
         return
 
     is_bot = str(event.user_id) == str(event.self_id)
@@ -46,8 +49,9 @@ async def _store(event: MessageEvent) -> None:
 
     db.add_message(
         user_id=str(event.user_id),
-        content=text,
+        content=content,
         group_id=group_id,
         nickname=nickname,
         is_bot=is_bot,
+        embeddable=bool(text),
     )

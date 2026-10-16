@@ -95,17 +95,30 @@ def add_message(
     nickname: str | None = None,
     is_bot: bool = False,
     ts: float | None = None,
+    embeddable: bool = True,
 ) -> int:
-    """写入一条消息，返回其 id。"""
+    """写入一条消息，返回其 id。
+
+    `embeddable=False` 用于纯图片/表情的占位消息：它们没有语义，
+    直接标记为已处理，免得往向量库里灌一堆无意义的 `[图片]`。
+    """
     content = (content or "").strip()
     if not content:
         return -1
     conn = connect()
     with _lock:
         cur = conn.execute(
-            "INSERT INTO messages(group_id, user_id, nickname, content, ts, is_bot) "
-            "VALUES (?,?,?,?,?,?)",
-            (group_id, user_id, nickname, content, ts or time.time(), 1 if is_bot else 0),
+            "INSERT INTO messages(group_id, user_id, nickname, content, ts, is_bot, embedded) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                group_id,
+                user_id,
+                nickname,
+                content,
+                ts or time.time(),
+                1 if is_bot else 0,
+                0 if embeddable else 1,
+            ),
         )
         conn.commit()
         rowid = int(cur.lastrowid or -1)

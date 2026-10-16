@@ -37,9 +37,25 @@ DEFAULTS: dict[str, Any] = {
     ),
     # ---- 触发 ----
     "trigger": {
-        "require_at_in_group": True,  # 群内必须 @ 机器人
+        # at=群内只认 @ 机器人（与前缀）；semantic=群内任意消息先过一道接话判定
+        "mode": "at",
+        "require_at_in_group": True,  # mode=at 时生效：群里必须 @ 机器人
         "prefixes": [],               # 额外前缀触发（可空）
         "reply_private": True,        # 私聊是否直接回
+        "aliases": [],                # 机器人昵称/别名，供接话判定参考
+        # mode=semantic 时的判定参数：每条群消息一次极小的模型调用，成本随群活跃度上升
+        "semantic": {
+            "context_messages": 8,   # 判定时附带的群内最近消息条数
+            "max_tokens": 4,         # 判定器输出上限（只回 1/0）
+            "max_per_minute": 20,    # 每群每分钟最多判定次数，超出后只响应直接点名
+        },
+    },
+    # ---- 读图（模型需支持图片输入）----
+    "vision": {
+        "enabled": True,
+        "max_images": 3,      # 单条消息最多读几张
+        "max_mb": 5.0,        # 单张图片大小上限
+        "timeout_sec": 20,    # 单张下载超时
     },
     # ---- 限流（默认值，可在面板调整）----
     "rate_limit": {
