@@ -58,6 +58,12 @@ DEFAULTS: dict[str, Any] = {
             # 是否允许「群友之间聊得热闹、正好有梗可接」时插话。
             # 关掉 = 只在明显是在叫机器人时才说话（基本不会主动插话）
             "allow_chitchat": True,
+            # 非 @ 主动接话的【抽签闸】：抽中了才去走判定。
+            # 「合不合适」交给判定，【说得勤不勤】交给这里 —— 两件事必须分开，
+            # 否则只能靠收紧判定来降频率，结果退化成「大群不插话」。
+            # 1.0 = 每条都判（默认偏话痨）；0 = 纯被动，只回 @。
+            # 抽签排在判定**前面**，所以调低这个值同时也省下判定调用。
+            "ambient_probability": 0.35,
         },
     },
     # ---- 读图（模型需支持图片输入）----
@@ -86,11 +92,15 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- 限流（默认值，可在面板调整）----
     "rate_limit": {
-        # 同一群两次回复最小间隔。30 秒等于每群硬上限 ≤2 条/分钟，大群里判定
-        # 好不容易通过时经常正落在冷却窗口内被丢掉，所以默认收紧到 15。
-        "per_group_seconds": 15,
+        # 同一群两次回复的**最小间隔**（防连发）。注意它不等于「话痨度」：
+        # 设成 1 秒≈等于没有限制，真正的总量闸是下面的 per_group_per_minute。
+        "per_group_seconds": 10,
         "per_user_seconds": 60,    # 同一用户冷却
         "global_max_concurrent": 3,  # 同时进行的模型请求上限
+        # 【话痨度的直接旋钮】每群滑动 60 秒窗口内最多开口几次。
+        # 这才是「每群每分钟最多说几句」；0 = 不限制（由其他闸兑底）。
+        # 复读侧另有自己的 60 秒冷却（三条复读路径共享，≤1 条/分），不在这里。
+        "per_group_per_minute": 3,
     },
     # ---- 风格注入（RAG）----
     "style": {
@@ -146,7 +156,7 @@ DEFAULTS: dict[str, Any] = {
         # 扮演的就是这个角色）。发出去的内容仍过 blocked_words / 冷却 / 去重。
         "pairs_reply": {
             "enabled": True,
-            "probability": 0.15,   # 每条消息的触发概率（冷却与屏蔽词仍是硬闸）
+            "probability": 0.08,   # 每条消息的触发概率（冷却与屏蔽词仍是硬闸）
             "min_score": 0.62,     # 余弦相似度下限，太低就是答非所问
             "top_k": 3,            # 在相似度前几条里挑，不是只看第一条
             "max_chars": 60,       # 接话本身太长就不发（复读要短）
@@ -224,7 +234,7 @@ _UPGRADED_DEFAULTS: dict[tuple[str, ...], tuple[Any, Any]] = {
     # 放开插话节流：原默认值在大群里会把每群判定额度几秒内打满
     ("trigger", "semantic", "max_per_minute"): (20, 60),
     ("trigger", "semantic", "context_messages"): (8, 20),
-    ("rate_limit", "per_group_seconds"): (30, 15),
+    ("rate_limit", "per_group_seconds"): (30, 10),
 }
 
 

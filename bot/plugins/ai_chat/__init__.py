@@ -9,8 +9,9 @@
 读图：消息里的图片下载后以 base64 内联给模型（需模型支持图片输入）。
 工具：被 @ 时可按 `llm_tools` 配置带上工具（function calling），多轮工具循环；
       群内自动接话永远不带工具，避免一次闲聊就多烧几轮调用。
-限流：三维——每群最小间隔、每用户冷却、全局并发上限；超限一律静默丢弃，
-      避免刷屏与烧额度。默认值来自 config.json，可在管理面板在线调整。
+限流：四维——每群最小间隔、每群每分钟上限、每用户冷却、全局并发上限；
+      超限一律静默丢弃，避免刷屏与烧额度。默认值来自 config.json，可在管理面板在线调整。
+      「每群每分钟上限」才是话痨度的直接旋钮（最小间隔只防连发）。
 拟人：随机打字延迟 + 长回复分段。
 """
 
@@ -54,6 +55,24 @@ def _group_mode() -> str:
     return str((config.get("trigger", {}) or {}).get("mode", "at") or "at")
 
 
+def _ambient_lottery(cfg: dict) -> bool:
+    """非 @ 主动接话的抽签闸：抽中了才去走判定。
+
+    把「合不合适」（判定提示词）和「说得勤不勤」（抽签 + 限流）拆开，
+    这样判定可以保持宽松、不会因为想降频率而退化成「大群不插话」。
+    抽签排在判定前面，抽不中就直接省掉那次模型调用。
+
+    `ambient_probability`: 1.0 = 每条都判；0 = 纯被动，只回 @。
+    """
+    sem = (cfg.get("trigger", {}) or {}).get("semantic", {}) or {}
+    probability = float(sem.get("ambient_probability", 1.0) or 0)
+    if probability >= 1.0:
+        return True
+    if probability <= 0.0:
+        return False
+    return random.random() < probability
+
+
 def _addressed(event: MessageEvent) -> bool:
     """是否被直接点名（@机器人 或命中前缀），这类消息无需再接话判定。"""
     return bool(event.is_tome()) or _has_prefix(event)
@@ -84,31 +103,70 @@ def _enabled_for(event: MessageEvent) -> bool:
 # 限流
 # --------------------------------------------------------------------------- #
 class _RateLimiter:
-    """滑动窗口（最近一次时间戳）+ 并发闸门。"""
+    """限流闸门。
+
+    四道闸，关心的事各不相同：
+
+    * `per_group_seconds` —— 同群两条之间的**最小间隔**（防连发）。它**不代表
+      话痨度**：设成 1 秒几乎等于没有限制。
+    * `per_group_per_minute` —— 同群滑动 60 秒窗口内的**总量上限**。
+      这才是「这个群每分钟最多说几句」的直接旋钮。
+    * `per_user_seconds` —— 同一用户的冷却。
+    * `global_max_concurrent` —— 同时在跑的模型请求数。
+
+    记账式闸门（间隔/窗口）在后续闸门拦下来时要**回滚**，否则会白占额度、
+    误伤下一个本来能过的消息。
+    """
 
     def __init__(self) -> None:
         self._group_last: dict[str, float] = {}
+        self._group_window: dict[str, list[float]] = {}
         self._user_last: dict[str, float] = {}
         self._active = 0
         self._lock = asyncio.Lock()
 
     def check(self, group_id: str | None, user_id: str, cfg: dict) -> bool:
         now = time.monotonic()
+        # 本群这次已记账的窗口条目；后面任一闸门拦下来就回滚
+        booked: list[float] | None = None
+
         if group_id:
             gap = float(cfg.get("per_group_seconds", 30) or 0)
             last = self._group_last.get(group_id, 0.0)
             if gap > 0 and now - last < gap:
                 return False
+
+            per_minute = int(cfg.get("per_group_per_minute", 0) or 0)
+            if per_minute > 0:
+                window = self._group_window.setdefault(group_id, [])
+                window[:] = [t for t in window if now - t < 60.0]
+                if len(window) >= per_minute:
+                    return False
+                window.append(now)
+                booked = window
+
             self._group_last[group_id] = now
+
         gap_u = float(cfg.get("per_user_seconds", 60) or 0)
         last_u = self._user_last.get(user_id, 0.0)
         if gap_u > 0 and now - last_u < gap_u:
             if group_id:
-                # 群窗口已放行但用户被冷却，回滚群时间戳以免误伤他人
+                # 群窗口已放行但用户被冷却，回滚群账以免误伤他人
                 self._group_last.pop(group_id, None)
+                if booked:
+                    booked.pop()
             return False
         self._user_last[user_id] = now
         return True
+
+    def rollback(self, group_id: str | None) -> None:
+        """并发闸门没拿到时的回滚：这次根本没开口，不该占群额度。"""
+        if not group_id:
+            return
+        self._group_last.pop(group_id, None)
+        window = self._group_window.get(group_id)
+        if window:
+            window.pop()
 
     async def acquire(self, limit: int) -> bool:
         async with self._lock:
@@ -648,14 +706,18 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         logger.warning("ai_chat: 未配置 DEEPSEEK_API_KEY，忽略本次回复")
         return
 
-    # 语义触发：没被点名的群消息先过判定，判定不通过就当没看见
+    # 语义触发：没被点名的群消息先抽签、再判定，任一不过就当没看见。
+    # 抽签在前：① 频率与「合不合适」解耦 ② 抽不中就省掉判定那次调用
     if (
         isinstance(event, GroupMessageEvent)
         and _group_mode() == "semantic"
         and not _addressed(event)
-        and not await _should_reply(event, cfg)
     ):
-        return
+        if not _ambient_lottery(cfg):
+            logger.debug("ai_chat: 主动接话未抽中，跳过")
+            return
+        if not await _should_reply(event, cfg):
+            return
 
     if not _limiter.check(group_id, user_id, cfg.get("rate_limit", {}) or {}):
         logger.debug("ai_chat: 命中限流，忽略")
@@ -663,6 +725,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
 
     limit = int((cfg.get("rate_limit", {}) or {}).get("global_max_concurrent", 3))
     if not await _limiter.acquire(limit):
+        # 并发没抢到就不该白占一个「本群每分钟」名额
+        _limiter.rollback(group_id)
         logger.debug("ai_chat: 并发已满，忽略")
         return
 

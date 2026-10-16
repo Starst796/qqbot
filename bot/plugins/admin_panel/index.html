@@ -122,12 +122,16 @@
     <div class="row"><label>机器人昵称/别名（逗号分隔）</label><input type="text" id="trigger.aliases" data-csv="1" /></div>
     <div class="row"><label>判定上下文条数</label><input type="number" id="trigger.semantic.context_messages" min="1" /></div>
     <div class="row"><label>判定每分钟上限(每群)</label><input type="number" id="trigger.semantic.max_per_minute" min="0" /></div>
+    <div class="row"><label>主动接话抽签概率(0~1)</label><input type="number" id="trigger.semantic.ambient_probability" step="0.05" min="0" max="1" /></div>
     <div class="row"><label>允许接群友的闲聊</label><input type="checkbox" id="trigger.semantic.allow_chitchat" /></div>
-    <p class="hint">semantic 模式下每条群消息都会多一次极小成本的判定调用，成本随群活跃度上升；
-      「群内需 @ 机器人」仅在 at 模式下生效。<br />
-      「判定每分钟上限」是<strong>大群不插话的头号原因</strong>：大群几十条/分钟，额度会在几秒内打满，
-      之后整分钟连判定都不做。建议按群活跃度量级给（如 60~120）。<br />
-      关掉「允许接群友的闲聊」会把判定退化成「只在被点名时说话」，基本不会主动插话。</p>
+    <p class="hint">semantic 模式下，没被点名的群消息要过<strong>两道闸</strong>：
+      先按「主动接话抽签概率」抽签，抽中了才去走判定；两道都过才开口。<br />
+      <strong>别用「允许接群友的闲聊」来降频率</strong> —— 它管的是「判得准不准」，
+      关掉会把判定退化成「只在被点名时说话」（就是之前“大群不插话”的老问题）。
+      想少说几句就调<strong>抽签概率</strong>，或「限流与话痨度」里的<strong>每群每分钟上限</strong>。<br />
+      「判定每分钟上限」是<strong>大群不插话的头号原因</strong>（大群几十条/分钟，额度几秒就打满），
+      建议按群活跃度量级给（如 30~60）。抽签排在它之前，所以调低抽签概率也顺带省下判定调用。<br />
+      「群内需 @ 机器人」仅在 at 模式下生效。</p>
   </section>
 
   <section class="card" data-page="chat">
@@ -141,12 +145,16 @@
   </section>
 
   <section class="card" data-page="chat">
-    <h2>限流</h2>
+    <h2>限流与话痨度</h2>
+    <div class="row"><label>每群每分钟最多说</label><input type="number" id="rate_limit.per_group_per_minute" min="0" /></div>
     <div class="row"><label>同群最小间隔(秒)</label><input type="number" id="rate_limit.per_group_seconds" min="0" /></div>
     <div class="row"><label>同用户冷却(秒)</label><input type="number" id="rate_limit.per_user_seconds" min="0" /></div>
     <div class="row"><label>全局并发上限</label><input type="number" id="rate_limit.global_max_concurrent" min="1" /></div>
-    <p class="hint">「同群最小间隔」同时也是自主插话的硬上限：想让大群多插话就别设太大
-      （30 秒 = 每群最多 2 条/分钟）。</p>
+    <p class="hint"><strong>「每群每分钟最多说几句」才是话痨度的直接旋钮</strong>
+      （按群滑动 60 秒窗口计数）。建议 2~5；0 = 不限制。<br />
+      「同群最小间隔」只管<strong>防连发</strong>：设成 1 秒约等于没有限制，别用它控制话痨度。
+      建议 5~10 秒。<br />
+      复读侧另有自己的 60 秒冷却（跟读 / 学舌 / 接话对三条共享），所以实际总量 ≈ 本值 + 1。</p>
   </section>
 
   <section class="card" data-page="chat">
