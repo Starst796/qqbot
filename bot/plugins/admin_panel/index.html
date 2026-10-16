@@ -103,7 +103,7 @@
     <div class="row"><label>启用机器人</label><input type="checkbox" id="enabled" /></div>
     <div class="row"><label>模型名</label><input type="text" id="model" /></div>
     <div class="row"><label>温度 temperature</label><input type="number" id="temperature" step="0.1" min="0" max="2" /></div>
-    <div class="row"><label>最大输出 tokens</label><input type="number" id="max_tokens" min="1" /></div>
+    <div class="row"><label>最大输出 tokens</label><input type="number" id="max_tokens" min="1" max="8192" /></div>
     <div class="row"><label>启用思考模式</label><input type="checkbox" id="thinking" /></div>
     <div class="row"><label>系统提示词</label><textarea id="system_prompt"></textarea></div>
   </section>
@@ -295,7 +295,10 @@ function fillForm(cfg) {
   });
 }
 
+let CLAMPED = []; // 记录保存时被夹到合法范围的字段，好提示用户
+
 function collectForm() {
+  CLAMPED = [];
   const out = JSON.parse(JSON.stringify(CONFIG));
   document.querySelectorAll("[id]").forEach((el) => {
     const path = el.id;
@@ -304,7 +307,20 @@ function collectForm() {
     if (el.type === "checkbox") value = el.checked;
     else if (el.dataset.lines) value = el.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     else if (el.dataset.csv) value = el.value.split(",").map(s => s.trim()).filter(Boolean);
-    else if (el.type === "number") value = el.value === "" ? 0 : Number(el.value);
+    else if (el.type === "number") {
+      // <input type=number> 不会拦住手输的越界值（原生校验只在表单提交时生效），
+      // 把 temperature=5 这种存进配置会让模型调用一直 400，所以这里按 min/max 夹一下
+      value = el.value === "" ? 0 : Number(el.value);
+      if (Number.isFinite(value)) {
+        const low = el.min === "" ? -Infinity : Number(el.min);
+        const high = el.max === "" ? Infinity : Number(el.max);
+        const fixed = Math.min(high, Math.max(low, value));
+        if (fixed !== value) {
+          value = fixed;
+          CLAMPED.push(`${el.id}（${fixed}）`);
+        }
+      }
+    }
     else value = el.value;
     setByPath(out, path, value);
   });
@@ -349,7 +365,10 @@ async function save(reload) {
     if (!d.ok) throw new Error(d.error || "保存失败");
     fillForm(d.config);
     if (reload) await fetch("/api/reload", { method: "POST" });
-    toast("已保存" + (reload ? "，缓存已失效" : ""));
+    toast(
+      "已保存" + (reload ? "，缓存已失效" : "") +
+      (CLAMPED.length ? `｜已把 ${CLAMPED.join("、")} 夹到允许范围` : "")
+    );
   } catch (e) {
     toast(e.message, true);
   } finally {

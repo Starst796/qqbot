@@ -149,13 +149,33 @@ def _get_client():
     return _client
 
 
+def _clamp_number(value, default: float, low: float, high: float) -> float:
+    """把配置里的数值夹到合法区间。
+
+    面板的 `<input type=number>` 拦不住手输的越界值（原生校验只在表单提交时生效），
+    所以 temperature=5 这类值能一路存进配置，之后每次模型调用都被 API 用
+    `Invalid temperature value, the valid range of temperature is [0, 2]` 拒掉 ——
+    表现出来就是“机器人突然哑了”。这里兜底，免得一个手滑的数字搞哑整条链路。
+    """
+    if isinstance(value, bool):  # bool 是 int 的子类，但显然不是温度
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return default
+    return min(high, max(low, number))
+
+
 async def _complete(messages: list[dict], cfg: dict) -> str:
     client = _get_client()
     kwargs = {
         "model": str(cfg.get("model", "deepseek-flash")),
         "messages": messages,
-        "temperature": float(cfg.get("temperature", 1.0)),
-        "max_tokens": int(cfg.get("max_tokens", 800)),
+        # DeepSeek 只接受 [0, 2]，越界直接 400
+        "temperature": _clamp_number(cfg.get("temperature", 1.0), 1.0, 0.0, 2.0),
+        "max_tokens": int(_clamp_number(cfg.get("max_tokens", 800), 800, 1, 8192)),
     }
     # deepseek-flash 默认开启思考模式；群聊要快，默认关掉（可在线打开）
     if not cfg.get("thinking", False):
