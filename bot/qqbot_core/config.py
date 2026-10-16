@@ -235,6 +235,11 @@ _UPGRADED_DEFAULTS: dict[tuple[str, ...], tuple[Any, Any]] = {
     ("trigger", "semantic", "max_per_minute"): (20, 60),
     ("trigger", "semantic", "context_messages"): (8, 20),
     ("rate_limit", "per_group_seconds"): (30, 10),
+    # 接话对直发概率 0.15 → 0.08（0.15 偏话痨）。
+    # ⚠️ 这个键**必须**走迁移规则而不是只改 DEFAULTS：面板一保存就会把
+    # 「合并后的完整配置」落盘，所以它很可能已经带着旧默认值写进了
+    # 用户 config.json（实测线上就是这样，值停在 0.15）。
+    ("repeat", "pairs_reply", "probability"): (0.15, 0.08),
 }
 
 
