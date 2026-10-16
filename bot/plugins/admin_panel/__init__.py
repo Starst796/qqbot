@@ -264,12 +264,17 @@ def _register(app) -> None:
         return _json({"ok": True, "message": "重建已在后台开始"})
 
     @app.get("/api/style/pairs")
-    async def _style_pairs(group_id: str, limit: int = 50):
+    async def _style_pairs(group_id: str, limit: int = 50, offset: int = 0):
+        """分页浏览某群的接话对；同时返回 total 供前端算页数。"""
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
         return _json(
             {
                 "ok": True,
-                "pairs": db.list_style_pairs(group_id, limit),
+                "pairs": db.list_style_pairs(group_id, limit, offset),
                 "total": db.style_pair_stats().get(group_id, 0),
+                "limit": limit,
+                "offset": offset,
             }
         )
 

@@ -11,7 +11,24 @@
   header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .badge { margin-left:auto; color:var(--mut); font-size:12px; }
-  main { max-width:960px; margin:0 auto; padding:24px; display:grid; gap:18px; }
+  /* 外壳：左侧菜单 + 内容区。菜单靠 data-page 属性切换卡片显隐，不拆 DOM */
+  .shell { display:flex; align-items:flex-start; max-width:1180px; margin:0 auto; }
+  .menu { flex:0 0 164px; width:164px; position:sticky; top:0; padding:22px 8px 22px 16px;
+          display:flex; flex-direction:column; gap:4px; }
+  .menu-item { background:transparent; color:var(--mut); border:0; border-radius:8px;
+               padding:9px 12px; text-align:left; font:inherit; cursor:pointer; white-space:nowrap; }
+  .menu-item:hover { background:#1d242c; color:var(--fg); }
+  .menu-item.active { background:#1f2a38; color:var(--acc); font-weight:600; }
+  main { flex:1; min-width:0; max-width:840px; padding:22px 24px 24px 8px; display:grid; gap:18px; }
+  /* 未分页的卡片（页脚操作条等，没有 data-page）始终可见 */
+  main > section.card[hidden] { display:none; }
+  @media (max-width:860px) {
+    .shell { flex-direction:column; }
+    .menu { flex:none; width:auto; flex-direction:row; gap:6px; overflow-x:auto;
+            position:sticky; top:0; z-index:5; background:var(--bg);
+            border-bottom:1px solid var(--line); padding:8px 12px; }
+    main { max-width:none; padding:18px 14px 20px; }
+  }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
   .card h2 { font-size:14px; margin:0 0 14px; color:var(--acc); font-weight:600; }
   .row { display:grid; grid-template-columns:220px 1fr; gap:12px; align-items:center; margin-bottom:12px; }
@@ -51,13 +68,20 @@
   <h1>QQ 机器人 · 管理面板</h1>
   <span class="badge" id="meta">加载中…</span>
 </header>
+<div class="shell">
+<nav class="menu" id="menu">
+  <button class="menu-item active" data-page="overview">总览</button>
+  <button class="menu-item" data-page="chat">对话</button>
+  <button class="menu-item" data-page="style">风格与复读</button>
+  <button class="menu-item" data-page="data">群与数据</button>
+</nav>
 <main>
-  <section class="card">
+  <section class="card" data-page="overview">
     <h2>运行统计</h2>
     <div class="stats" id="stats">—</div>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="overview">
     <h2>QQ 登录状态</h2>
     <div class="actions-inline">
       <span class="hint2" id="qqState" style="margin:0">检查中…</span>
@@ -74,7 +98,7 @@
     <pre class="logbox" id="napcatLog">—</pre>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="chat">
     <h2>总开关与模型</h2>
     <div class="row"><label>启用机器人</label><input type="checkbox" id="enabled" /></div>
     <div class="row"><label>模型名</label><input type="text" id="model" /></div>
@@ -84,7 +108,7 @@
     <div class="row"><label>系统提示词</label><textarea id="system_prompt"></textarea></div>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="chat">
     <h2>触发</h2>
     <div class="row"><label>触发方式</label>
       <select id="trigger.mode">
@@ -102,7 +126,7 @@
       「群内需 @ 机器人」仅在 at 模式下生效。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="chat">
     <h2>读图</h2>
     <div class="row"><label>启用读图</label><input type="checkbox" id="vision.enabled" /></div>
     <div class="row"><label>单条最多读几张</label><input type="number" id="vision.max_images" min="1" /></div>
@@ -112,14 +136,14 @@
       <code>deepseek-v4-pro</code> 不支持）。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="chat">
     <h2>限流</h2>
     <div class="row"><label>同群最小间隔(秒)</label><input type="number" id="rate_limit.per_group_seconds" min="0" /></div>
     <div class="row"><label>同用户冷却(秒)</label><input type="number" id="rate_limit.per_user_seconds" min="0" /></div>
     <div class="row"><label>全局并发上限</label><input type="number" id="rate_limit.global_max_concurrent" min="1" /></div>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="style">
     <h2>风格注入（RAG / 接话对）</h2>
     <div class="row"><label>启用历史风格</label><input type="checkbox" id="style.enabled" /></div>
     <div class="row"><label>注入来源</label>
@@ -148,11 +172,17 @@
     </div>
     <div id="pairsBox" style="display:none;margin-top:14px">
       <h2 id="pairsTitle"></h2>
+      <div class="actions-inline" style="margin:10px 0">
+        <button class="ghost mini" id="pairsPrev">◀ 上一页</button>
+        <span class="hint2" id="pairsPage"></span>
+        <button class="ghost mini" id="pairsNext">下一页 ▶</button>
+        <span class="hint2" id="pairsHint"></span>
+      </div>
       <div id="pairsList"></div>
     </div>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="style">
     <h2>学习型复读</h2>
     <div class="row"><label>启用复读</label><input type="checkbox" id="repeat.enabled" /></div>
     <div class="row"><label>跟读阈值（连续 N 条）</label><input type="number" id="repeat.threshold" min="2" /></div>
@@ -170,7 +200,7 @@
       「机器人发言后静默」用于避让 AI 回复，防止两套回复同时出声。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="data">
     <h2>存储与检索</h2>
     <div class="row"><label>全量落库群消息</label><input type="checkbox" id="storage.log_all_group_messages" /></div>
     <div class="row"><label>记录私聊</label><input type="checkbox" id="storage.log_private" /></div>
@@ -179,7 +209,7 @@
     <p class="hint">内存紧张可将 <code>BAAI/bge-m3</code> 换成 <code>BAAI/bge-small-zh-v1.5</code>（重启生效）。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="chat">
     <h2>拟人化</h2>
     <div class="row"><label>最短打字延迟(ms)</label><input type="number" id="humanize.min_delay_ms" min="0" /></div>
     <div class="row"><label>最长打字延迟(ms)</label><input type="number" id="humanize.max_delay_ms" min="0" /></div>
@@ -191,7 +221,7 @@
       会按句末标点切开。「一次最多几条」是防刷屏上限，超出部分并入最后一条。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="overview">
     <h2>服务控制</h2>
     <div class="actions-inline">
       <button class="ghost" id="btnReload">重载配置</button>
@@ -202,7 +232,7 @@
       「重启服务」重启进程（约 3 秒，systemd 自动拉起），用于切换 embedding 模型等需要重新加载的场景。</p>
   </section>
 
-  <section class="card">
+  <section class="card" data-page="data">
     <h2>群功能开关与数据管理</h2>
     <div class="row"><label>未单独设置的群默认响应</label><input type="checkbox" id="groups.default_enabled" /></div>
     <div class="actions-inline">
@@ -232,6 +262,7 @@
     <span id="toast"></span>
   </div>
 </main>
+</div><!-- /shell -->
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -328,6 +359,42 @@ async function save(reload) {
 
 $("save").onclick = () => save(false);
 $("reload").onclick = () => save(true);
+
+// ---------------- 菜单分页 ----------------
+// 卡片在 DOM 里不搬家，只靠 data-page 属性控制显隐
+// （这样 fillForm/collectForm 遍历 [id] 依然能拿到全部隐藏页的字段）
+const PAGES = ["overview", "chat", "style", "data"];
+
+function showPage(name) {
+  if (!PAGES.includes(name)) name = "overview";
+  document.querySelectorAll("#menu .menu-item").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.page === name);
+  });
+  document.querySelectorAll("main > section.card[data-page]").forEach((card) => {
+    card.hidden = card.dataset.page !== name;
+  });
+  try { localStorage.setItem("qqbot.page", name); } catch (e) { /* 隐私模式 */ }
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  window.scrollTo({ top: 0 });
+}
+
+$("menu").addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".menu-item");
+  if (btn) showPage(btn.dataset.page);
+});
+
+function initialPage() {
+  const fromHash = location.hash.slice(1);
+  if (PAGES.includes(fromHash)) return fromHash;
+  try {
+    const saved = localStorage.getItem("qqbot.page") || "";
+    if (PAGES.includes(saved)) return saved;
+  } catch (e) { /* 隐私模式 */ }
+  return "overview";
+}
+
+showPage(initialPage());
+
 loadConfig();
 loadStats();
 setInterval(loadStats, 15000);
@@ -572,13 +639,39 @@ $("btnPairs").onclick = () => {
   viewPairs(gid);
 };
 
-async function viewPairs(gid) {
-  const r = await fetch(`/api/style/pairs?group_id=${encodeURIComponent(gid)}&limit=50`);
+// 接话对分页浏览：每页 PAIRS_LIMIT 条，用「◀ 上一页 / 下一页 ▶」翻页
+const PAIRS_LIMIT = 50;
+let pairsState = { group_id: "", offset: 0, total: 0 };
+
+async function viewPairs(gid, offset) {
+  const want = Math.max(0, Number(offset) || 0);
+  const r = await fetch(
+    `/api/style/pairs?group_id=${encodeURIComponent(gid)}` +
+    `&limit=${PAIRS_LIMIT}&offset=${want}`
+  );
   const d = await r.json();
   const list = d.pairs || [];
-  $("pairsTitle").textContent = `群 ${gid} · 接话对 ${list.length}/${d.total ?? 0} 条`;
+  const total = d.total ?? 0;
+
+  // 删到本页空了就自动回退一页，不停在空白页
+  if (!list.length && want > 0) return viewPairs(gid, Math.max(0, want - PAIRS_LIMIT));
+
+  pairsState = { group_id: gid, offset: want, total };
+  const pages = Math.max(1, Math.ceil(total / PAIRS_LIMIT));
+  const page = Math.floor(want / PAIRS_LIMIT) + 1;
+  const to = want + list.length;
+
+  $("pairsTitle").textContent = `群 ${gid} · 接话对共 ${total} 条`;
+  $("pairsPage").textContent = list.length
+    ? `第 ${page}/${pages} 页 · 第 ${want + 1}~${to} 条` : "暂无";
+  $("pairsHint").textContent = total > PAIRS_LIMIT ? `每页 ${PAIRS_LIMIT} 条` : "";
+  $("pairsPrev").disabled = want <= 0;
+  $("pairsNext").disabled = list.length === 0 || to >= total;
+
   const box = $("pairsList");
-  box.innerHTML = list.length ? "" : '<div class="msg" style="color:var(--mut)">无（点「只重建该群」生成）</div>';
+  box.innerHTML = list.length
+    ? ""
+    : '<div class="msg" style="color:var(--mut)">无（点「只重建该群」生成）</div>';
   for (const p of list) {
     const div = document.createElement("div");
     div.className = "msg";
@@ -592,6 +685,13 @@ async function viewPairs(gid) {
   $("pairsBox").style.display = "block";
 }
 
+$("pairsPrev").onclick = () => {
+  if (pairsState.group_id) viewPairs(pairsState.group_id, pairsState.offset - PAIRS_LIMIT);
+};
+$("pairsNext").onclick = () => {
+  if (pairsState.group_id) viewPairs(pairsState.group_id, pairsState.offset + PAIRS_LIMIT);
+};
+
 $("pairsList").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-pair-del]");
   if (!btn) return;
@@ -602,8 +702,10 @@ $("pairsList").addEventListener("click", async (ev) => {
   });
   const d = await r.json();
   if (!d.ok) return toast("删除失败", true);
-  btn.closest(".msg").remove();
   toast("已删除该接话对");
+  // 删除会让后面记录前移，重取当前页（偏移才能对齐）
+  if (pairsState.group_id) await viewPairs(pairsState.group_id, pairsState.offset);
+  loadStats();
 });
 
 loadGroups();

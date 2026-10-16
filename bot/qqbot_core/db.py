@@ -392,15 +392,21 @@ def load_style_pairs(group_id: str) -> list[sqlite3.Row]:
         )
 
 
-def list_style_pairs(group_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    """供面板浏览（不返回向量）。"""
+def list_style_pairs(
+    group_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    """供面板浏览（不返回向量）。`offset` 用于分页。
+
+    排序固定为 `score DESC, id DESC`：只要不重建，翻页结果就是稳定的，
+    不会出现某条记录在两页里重复或整条漏掉。
+    """
     conn = connect()
     with _lock:
         rows = list(
             conn.execute(
                 "SELECT id, context, reply, score, source, created_at FROM style_pairs "
-                "WHERE group_id = ? ORDER BY score DESC, id DESC LIMIT ?",
-                (group_id, max(1, limit)),
+                "WHERE group_id = ? ORDER BY score DESC, id DESC LIMIT ? OFFSET ?",
+                (group_id, max(1, limit), max(0, offset)),
             )
         )
     return [dict(r) for r in rows]
