@@ -191,8 +191,13 @@ def _register(app) -> None:
 
     @app.get("/", response_class=HTMLResponse)
     async def _index() -> HTMLResponse:
+        # 面板每次部署都会变。不给 Cache-Control 时浏览器会走启发式缓存，
+        # 可能拿着旧页面让人误以为改动没生效，这里直接禁止缓存。
         try:
-            return HTMLResponse(_PANEL_HTML.read_text(encoding="utf-8"))
+            return HTMLResponse(
+                _PANEL_HTML.read_text(encoding="utf-8"),
+                headers={"Cache-Control": "no-store"},
+            )
         except OSError as exc:
             return HTMLResponse(f"面板页面缺失：{exc}", status_code=500)
 
