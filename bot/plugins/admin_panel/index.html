@@ -432,7 +432,16 @@ $("btnReload").onclick = async () => {
 $("btnRestart").onclick = async () => {
   if (!confirm("确定重启机器人服务？约 3 秒后自动恢复。")) return;
   $("svcState").textContent = "正在重启…（6 秒后自动刷新页面）";
-  try { await fetch("/api/restart", { method: "POST" }); } catch (e) { /* 连接会断，属正常 */ }
+  let data = null;
+  try {
+    const r = await fetch("/api/restart", { method: "POST" });
+    data = await r.json().catch(() => null);
+  } catch (e) { /* 进程退出时连接会断，属正常 */ }
+  if (data && data.ok === false) {
+    // 例如 Windows：没有守护进程兜底，进程退出就没人拉起，不能假装重启成功
+    $("svcState").textContent = "";
+    return toast(data.error || "当前平台不支持自动重启", true);
+  }
   setTimeout(() => location.reload(), 6000);
 };
 

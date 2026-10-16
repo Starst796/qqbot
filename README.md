@@ -173,6 +173,10 @@ cp bot/.env.example bot/.env
 vi bot/.env      # 填 DEEPSEEK_API_KEY、ONEBOT_V11_ACCESS_TOKEN
 ```
 
+⚠️ 模板里的 `DRIVER=~fastapi+~websockets` 不要改：`+~websockets` 一旦去掉，
+驱动就不支持 WebSocket **客户端**连接，OneBot 永远连不上 —— 而日志里只留一句
+很容易被忽略的 `does not support websocket client connections! Ignored`。
+
 ### 4. 启动 NapCat 并登录 QQ
 
 ```bash
@@ -231,6 +235,50 @@ curl -su admin https://qq.example.com/  # 面板可达
 面板「运行统计」的消息/向量数会增长。
 
 ---
+
+## 在 Windows 上运行
+
+机器人代码本身是跨平台的（无 `os.fork` / `fcntl` / `uvloop`，路径统一走 `pathlib`），
+但**`deploy/` 里的 systemd / nginx / sudoers 模板在 Windows 上用不了**，所以这是一条
+和上面完全不同的路径 —— 代价是**没有开机自启，也没有 BasicAuth 鉴权**。
+
+1. 装 **Docker Desktop**（WSL2 后端）和 Python 3.10~3.12。
+2. 起 NapCat：
+
+   ```powershell
+   cd napcat
+   # Windows 的 bind mount 不保留 POSIX 属主，先把目录建出来再 up
+   "config","QQ","logs","cache" | ForEach-Object { New-Item -ItemType Directory -Force "data\$_" }
+   # 若 NapCat 报写不进去，把 docker-compose.yml 里的 NAPCAT_UID/GID 改成 0
+   docker compose up -d
+   ```
+
+3. 起机器人：
+
+   ```powershell
+   cd bot
+   python -m venv ..\venv
+   ..\venv\Scripts\python -m pip install -r requirements.txt
+   Copy-Item .env.example .env
+   notepad .env        # 填 DEEPSEEK_API_KEY、ONEBOT_V11_ACCESS_TOKEN
+   ..\venv\Scripts\python bot.py
+   ```
+
+4. 开机自启：用「任务计划程序」或 [NSSM](https://nssm.cc/) 把 `bot.py` 注册成服务。
+
+> **面板绝对不要暴露到公网。** BasicAuth 是 nginx 那层做的，Windows 上通常没有 nginx，
+> 面板（`127.0.0.1:8081`）就是**零鉴权**的。只在本机访问，或自己在前面套一层带鉴权的反代。
+
+Windows 上还会遇到的：
+
+- **「重启服务」按钮不生效**：它靠 systemd 拉起，Windows 上没有兜底，
+  所以服务端会直接返回 501 并提示你手动重启（不会把进程弄死）。
+- **`HF_HOME` 建议显式设一下**，否则 2.3 GB 的 embedding 模型会落到
+  `%USERPROFILE%\.cache\huggingface`；想换 `BAAI/bge-small-zh-v1.5` 也是改面板里的
+  `retrieval.embed_model` 后重启。
+- **GPU 加速**要装对应 CUDA 版本的 torch wheel，50 系卡必须 `cu128`：
+  `pip install torch --index-url https://download.pytorch.org/whl/cu128`。
+  然后可以用 `deploy/local_embed.py` 在本机批量算向量（见上文「离线批量算向量」）。
 
 ## 日常运维
 

@@ -41,13 +41,23 @@ def _json(payload, status: int = 200):
     return JSONResponse(payload, status_code=status)
 
 
-def _schedule_restart(delay: float = 1.0) -> None:
+# Windows 下没有守护进程兜底，进程一旦退出就再也没人把它拉起来
+_IS_WINDOWS = os.name == "nt"
+
+
+def _schedule_restart(delay: float = 1.0) -> bool:
     """延迟向自身发 SIGTERM，由 systemd（unit 里 Restart=always）拉起。
 
     这样无需 sudo，也不与 NoNewPrivileges=true 冲突。
+
+    Windows 上没有 systemd 兜底，自杀之后就真的起不来了，
+    所以这里什么也不做并返回 False，由调用方提示用户手动重启。
     """
+    if _IS_WINDOWS:
+        return False
     loop = asyncio.get_event_loop()
     loop.call_later(delay, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +246,20 @@ def _register(app) -> None:
 
     @app.post("/api/restart")
     async def _restart():
-        """硬重启：先回响应，约 1 秒后优雅退出，systemd 自动拉起。"""
-        _schedule_restart()
+        """硬重启：先回响应，约 1 秒后优雅退出，systemd 自动拉起。
+
+        Windows 上没有 systemd 兜底，进程退出了就没人拉起，这里干脆不自杀，
+        直接告诉调用者需要手动重启（否则面板会把人坑得以为重启成功了）。
+        """
+        if not _schedule_restart():
+            return _json(
+                {
+                    "ok": False,
+                    "error": "当前平台没有守护进程兜底（Windows），"
+                    "请手动停止并重新运行 bot.py",
+                },
+                status=501,
+            )
         logger.info("admin_panel: 已请求重启服务")
         return _json({"ok": True, "message": "服务将在约 1 秒后重启"})
 

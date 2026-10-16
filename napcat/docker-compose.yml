@@ -14,6 +14,13 @@
 #   docker compose logs -f       看日志
 #   docker compose pull && docker compose up -d   升级镜像
 #   docker compose down           停止
+#
+# Windows 注意（Docker Desktop + WSL2）：
+#   * bind mount 走 9p，不保留 POSIX 属主，NapCat 可能写不进 ./data
+#     （QQ 登录态与登录二维码都在里面）。先把下面四个目录手动建出来再 up：
+#         data/config  data/QQ  data/logs  data/cache
+#     仍报权限错就把 NAPCAT_UID / NAPCAT_GID 改成 0。
+#   * 管理面板的「QQ 登录状态 / 二维码」依赖这些挂载路径，别换成 named volume。
 # ============================================================================
 services:
   napcat:
