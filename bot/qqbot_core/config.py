@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 from pathlib import Path
@@ -47,9 +48,16 @@ DEFAULTS: dict[str, Any] = {
         "aliases": [],                # 机器人昵称/别名，供接话判定参考
         # mode=semantic 时的判定参数：每条群消息一次极小的模型调用，成本随群活跃度上升
         "semantic": {
-            "context_messages": 8,   # 判定时附带的群内最近消息条数
+            # 判定时附带的群内最近消息条数。大群刷得快，条数太少判定看不到话题脉络
+            "context_messages": 20,
             "max_tokens": 4,         # 判定器输出上限（只回 1/0）
-            "max_per_minute": 20,    # 每群每分钟最多判定次数，超出后只响应直接点名
+            # 每群每分钟最多判定次数，超出后只响应直接点名。
+            # 大群（几十条/分钟）设 20 会在几秒内打满，之后整分钟连判定都不做
+            # —— 这是「大群不插话」的头号原因，默认放到 60。
+            "max_per_minute": 60,
+            # 是否允许「群友之间聊得热闹、正好有梗可接」时插话。
+            # 关掉 = 只在明显是在叫机器人时才说话（基本不会主动插话）
+            "allow_chitchat": True,
         },
     },
     # ---- 读图（模型需支持图片输入）----
@@ -78,7 +86,9 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- 限流（默认值，可在面板调整）----
     "rate_limit": {
-        "per_group_seconds": 30,   # 同一群两次回复最小间隔
+        # 同一群两次回复最小间隔。30 秒等于每群硬上限 ≤2 条/分钟，大群里判定
+        # 好不容易通过时经常正落在冷却窗口内被丢掉，所以默认收紧到 15。
+        "per_group_seconds": 15,
         "per_user_seconds": 60,    # 同一用户冷却
         "global_max_concurrent": 3,  # 同时进行的模型请求上限
     },
@@ -129,6 +139,18 @@ DEFAULTS: dict[str, Any] = {
         "ignored_users": [],        # 不学这些人的话
         # 群里刚有机器人发言后这段时间内不复读，避免与 ai_chat 的回复撞在一起
         "quiet_after_reply_seconds": 10,
+        # ---- 接话对直发：把 style_pairs 真正用来「开口」----
+        # 原先接话对只喂给 LLM 调语气，从不参与「要不要说话」的决策，所以
+        # 「命中接话对也不插话」是必然的。这里补一条独立开口通路：向量命中
+        # 历史上很像的一句 → 直接把当年那句接话发出去（Pallas-Bot 里 Repeater
+        # 扮演的就是这个角色）。发出去的内容仍过 blocked_words / 冷却 / 去重。
+        "pairs_reply": {
+            "enabled": True,
+            "probability": 0.15,   # 每条消息的触发概率（冷却与屏蔽词仍是硬闸）
+            "min_score": 0.62,     # 余弦相似度下限，太低就是答非所问
+            "top_k": 3,            # 在相似度前几条里挑，不是只看第一条
+            "max_chars": 60,       # 接话本身太长就不发（复读要短）
+        },
     },
     # ---- 存储 ----
     "storage": {
@@ -145,6 +167,27 @@ DEFAULTS: dict[str, Any] = {
         "split_lines": True,   # 按行拆（提示词要求"一行一句"），每行一条消息
         "split_at": 350,       # 单条长度上限，过长则按句末标点再切
         "max_chunks": 5,       # 一次回复最多拆几条，超出部分并入最后一条
+    },
+    # ---- @ 工具调用（function calling）----
+    # 只在被 @ 的对话里启用：群内自动接话永远不带工具，否则一次闲聊就可能
+    # 多烧几轮调用。工具注册表见 `qqbot_core/tools.py`。
+    "llm_tools": {
+        "enabled": True,
+        # true = 只有被 @（或命中前缀）时才带工具。强烈建议保持 true：
+        # 带工具后每轮可能多调几次模型，成本随群活跃度线性上升。
+        "only_when_addressed": True,
+        "selective": True,             # 按意图筛工具（「相关即带」）；关掉则每次带上全部可见工具
+        "deferred_auto_enable": True,  # 允许模型调 tools.find 现场发现低频工具
+        "max_rounds": 3,               # 工具循环最多几轮，防跑飞
+        "timeout_sec": 25,             # 单个工具的执行超时（秒）
+        "max_result_chars": 1600,      # 工具返回给模型的内容上限
+        "desc_max_len": 0,             # 工具描述截断长度，0 = 不截断
+        "confirm_side_effects": True,  # 有副作用的工具一律拦下（内置工具目前都是只读的）
+        "blacklist": [],               # 拉黑的工具名
+        # 联网搜索。接口地址可在此改；**密钥只从环境变量 TAVILY_API_KEY 读**
+        # （config.json 会被面板接口原样吐出来，不能放密钥）。
+        "web_search_api_url": "https://api.tavily.com/search",
+        "web_search_max_results": 5,
     },
     # ---- 检索参数 ----
     "retrieval": {
@@ -172,6 +215,41 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+# 定向升级旧默认值。
+#
+# 背景：`save()` 落盘的是**合并后的完整配置**，所以线上 `config.json` 里带着
+# 每一个键 —— 光改 DEFAULTS 对已部署实例毫无作用。这里只对「用户从没动过、
+# 当前值仍精确等于旧默认」的键做升级，用户自己调过的值一律不碰。
+_UPGRADED_DEFAULTS: dict[tuple[str, ...], tuple[Any, Any]] = {
+    # 放开插话节流：原默认值在大群里会把每群判定额度几秒内打满
+    ("trigger", "semantic", "max_per_minute"): (20, 60),
+    ("trigger", "semantic", "context_messages"): (8, 20),
+    ("rate_limit", "per_group_seconds"): (30, 15),
+}
+
+
+def _apply_upgrades(merged: dict[str, Any]) -> dict[str, Any]:
+    """把仍是旧默认值的键升到新默认值；返回副本，绝不动 DEFAULTS 里的子字典。"""
+    out = copy.deepcopy(merged)
+    for path, (old, new) in _UPGRADED_DEFAULTS.items():
+        node: Any = out
+        for part in path[:-1]:
+            node = node.get(part) if isinstance(node, dict) else None
+        leaf = path[-1]
+        if not isinstance(node, dict) or leaf not in node:
+            continue
+        current = node[leaf]
+        if isinstance(current, bool):
+            continue
+        try:
+            is_old = float(current) == float(old)
+        except (TypeError, ValueError):
+            continue
+        if is_old:
+            node[leaf] = new
+    return out
+
+
 def load(force: bool = False) -> dict[str, Any]:
     """读取配置；文件未变化时走缓存。"""
     global _cache, _cache_mtime
@@ -193,7 +271,7 @@ def load(force: bool = False) -> dict[str, Any]:
             except (json.JSONDecodeError, OSError):
                 raw = {}
 
-        merged = _deep_merge(DEFAULTS, raw)
+        merged = _apply_upgrades(_deep_merge(DEFAULTS, raw))
         if not CONFIG_PATH.exists():
             # 首次运行落一份带默认值的文件，方便直接在服务器上查看/编辑
             try:
@@ -231,7 +309,9 @@ def save(new_config: dict[str, Any]) -> dict[str, Any]:
     """覆盖写入配置（面板调用）。返回合并后的完整配置。"""
     global _cache, _cache_mtime
     with _lock:
-        merged = _deep_merge(DEFAULTS, new_config if isinstance(new_config, dict) else {})
+        merged = _apply_upgrades(
+            _deep_merge(DEFAULTS, new_config if isinstance(new_config, dict) else {})
+        )
         CONFIG_PATH.write_text(
             json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
         )

@@ -8,6 +8,12 @@
    （`qqbot_core.keywords` 近似分词，替代 Pallas 用的 jieba），之后遇到同桶的
    新消息时按概率抽一条学到的接话复述，并用「常用度 × 新鲜度」加权。
 
+3. **接话对直发**：拿当前消息去 `style_pairs`（离线蒸馏出的接话对）里做向量
+   召回，命中历史上很像的一句就把**当年那句接话**发出去。
+   这条补的是一块结构缺口：接话对原先只喂给 ai_chat 调语气，**从不参与
+   「要不要说话」的决策**，所以「命中接话对也不插话」是必然的。这相当于
+   Pallas-Bot 里 Repeater 扮演的角色。
+
 安全阀（都在面板里可调）：群功能开关、总开关、同群冷却、近期重复抑制、
 屏蔽词/拉黑句/忽略用户。复读是"学到什么就说什么"，所以纠偏机制是必需品：
 `repeat.blocked_words` 命中即不学也不复读，`repeat.blocked_answers` 可整句拉黑
@@ -171,6 +177,61 @@ def _decide(group_id: str, text: str, cfg: dict) -> tuple[str, str] | None:
     return answer, "学舌"
 
 
+def _may_open(group_id: str, cfg: dict) -> bool:
+    """开口前的硬闸（同群冷却 + 刚有机器人发言让路）。
+
+    单独抽出来是为了在**算向量之前**先筛一道：接话对召回要跑一次 embedding，
+    而大群里绝大多数时候冷却都是关着的，先筛能省掉大量白算。
+    """
+    cooldown = float(cfg.get("cooldown_seconds", 60) or 0)
+    if cooldown > 0 and time.monotonic() - _group_last_sent.get(group_id, 0.0) < cooldown:
+        return False
+    quiet = float(cfg.get("quiet_after_reply_seconds", 10) or 0)
+    return not activity.spoken_recently(group_id, quiet)
+
+
+async def _pairs_reply(group_id: str, text: str, cfg: dict) -> str | None:
+    """接话对直发：向量命中历史上很像的一句 → 把当年那句接话发出去。
+
+    用 `repeat` 里已有的安全阀（冷却、去重、屏蔽词、长度上限）做扇控制，
+    所以这里只需把候选挑出来，发不发交给 `_send()` 定。
+    """
+    pairs = cfg.get("pairs_reply", {}) or {}
+    if not pairs.get("enabled", True):
+        return None
+
+    probability = float(pairs.get("probability", 0.15) or 0)
+    if probability <= 0 or random.random() >= probability:
+        return None
+    if not _may_open(group_id, cfg):
+        return None  # 先筛一道，别为了一定发不出去的结果白算一次 embedding
+
+    try:
+        from plugins.style_distill import retrieve_replies
+
+        rows = await retrieve_replies(
+            group_id,
+            text,
+            int(pairs.get("top_k", 3) or 3),
+            float(pairs.get("min_score", 0.62) or 0.62),
+        )
+    except Exception as exc:  # noqa: BLE001 —— 接话对不可用不该影响其他复读路径
+        logger.warning(f"repeater: 接话对检索失败：{type(exc).__name__}: {exc}")
+        return None
+
+    limit = int(pairs.get("max_chars", 60) or 0)
+    for _context, reply, _score in rows:
+        candidate = " ".join(str(reply or "").split())
+        if not candidate or candidate == text:
+            continue
+        if _blocked(candidate, cfg):
+            continue
+        if limit and len(candidate) > limit:
+            continue
+        return candidate
+    return None
+
+
 async def _send(group_id: str, text: str, cfg: dict, reason: str) -> bool:
     # 复读永远只发一条：把学到句子里的换行/连续空白压平，免得也变成多行气泡
     text = " ".join(str(text or "").split())
@@ -225,3 +286,9 @@ async def _handle(event: MessageEvent) -> None:
     if decision:
         content, reason = decision
         await _send(group_id, content, cfg, reason)
+        return
+
+    # 跟读/学舌都没开口时，再试一次「接话对直发」
+    picked = await _pairs_reply(group_id, text, cfg)
+    if picked:
+        await _send(group_id, picked, cfg, "接话对")

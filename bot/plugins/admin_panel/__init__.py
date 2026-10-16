@@ -392,6 +392,44 @@ def _register(app) -> None:
         logger.info(f"admin_panel: 删除接话对 {removed} 条")
         return _json({"ok": True, "deleted": removed})
 
+    # ---- 工具注册表（@ 对话的 function calling）----
+    @app.get("/api/tools")
+    async def _tools_list(text: str = ""):
+        """列出已注册工具；给了 text 就额外返回「这句话会带上哪些工具」。"""
+        try:
+            from qqbot_core import tools as registry
+
+            registry.register_builtins()
+            try:
+                from plugins import ai_chat
+
+                ai_chat.register_tools()
+            except Exception:  # noqa: BLE001 —— 插件侧工具缺失不影响列出内置工具
+                pass
+            rows = [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "visibility": tool.visibility,
+                    "hints": list(tool.hints),
+                    "read_only": tool.read_only,
+                    "source": tool.source,
+                }
+                for tool in registry.all_tools()
+            ]
+            return _json(
+                {
+                    "ok": True,
+                    "enabled": registry.enabled(),
+                    "tools": rows,
+                    "selected": [t.name for t in registry.select(text)] if text else [],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _json(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}", "tools": []}, status=500
+            )
+
     # ---- 上下文 / 数据管理 ----
     @app.get("/api/context/groups")
     async def _ctx_groups():

@@ -122,8 +122,12 @@
     <div class="row"><label>机器人昵称/别名（逗号分隔）</label><input type="text" id="trigger.aliases" data-csv="1" /></div>
     <div class="row"><label>判定上下文条数</label><input type="number" id="trigger.semantic.context_messages" min="1" /></div>
     <div class="row"><label>判定每分钟上限(每群)</label><input type="number" id="trigger.semantic.max_per_minute" min="0" /></div>
+    <div class="row"><label>允许接群友的闲聊</label><input type="checkbox" id="trigger.semantic.allow_chitchat" /></div>
     <p class="hint">semantic 模式下每条群消息都会多一次极小成本的判定调用，成本随群活跃度上升；
-      「群内需 @ 机器人」仅在 at 模式下生效。</p>
+      「群内需 @ 机器人」仅在 at 模式下生效。<br />
+      「判定每分钟上限」是<strong>大群不插话的头号原因</strong>：大群几十条/分钟，额度会在几秒内打满，
+      之后整分钟连判定都不做。建议按群活跃度量级给（如 60~120）。<br />
+      关掉「允许接群友的闲聊」会把判定退化成「只在被点名时说话」，基本不会主动插话。</p>
   </section>
 
   <section class="card" data-page="chat">
@@ -141,6 +145,34 @@
     <div class="row"><label>同群最小间隔(秒)</label><input type="number" id="rate_limit.per_group_seconds" min="0" /></div>
     <div class="row"><label>同用户冷却(秒)</label><input type="number" id="rate_limit.per_user_seconds" min="0" /></div>
     <div class="row"><label>全局并发上限</label><input type="number" id="rate_limit.global_max_concurrent" min="1" /></div>
+    <p class="hint">「同群最小间隔」同时也是自主插话的硬上限：想让大群多插话就别设太大
+      （30 秒 = 每群最多 2 条/分钟）。</p>
+  </section>
+
+  <section class="card" data-page="chat">
+    <h2>工具调用（被 @ 时）</h2>
+    <div class="row"><label>启用工具调用</label><input type="checkbox" id="llm_tools.enabled" /></div>
+    <div class="row"><label>仅被 @ 时启用</label><input type="checkbox" id="llm_tools.only_when_addressed" /></div>
+    <div class="row"><label>按意图筛工具</label><input type="checkbox" id="llm_tools.selective" /></div>
+    <div class="row"><label>允许模型发现低频工具</label><input type="checkbox" id="llm_tools.deferred_auto_enable" /></div>
+    <div class="row"><label>最多工具轮数</label><input type="number" id="llm_tools.max_rounds" min="1" max="10" /></div>
+    <div class="row"><label>单次工具超时(秒)</label><input type="number" id="llm_tools.timeout_sec" min="1" /></div>
+    <div class="row"><label>工具返回长度上限</label><input type="number" id="llm_tools.max_result_chars" min="0" /></div>
+    <div class="row"><label>拉黑的工具（每行一个）</label><textarea id="llm_tools.blacklist" data-lines="1"></textarea></div>
+    <div class="row"><label>联网搜索接口地址</label><input type="text" id="llm_tools.web_search_api_url" /></div>
+    <div class="row"><label>搜索结果条数</label><input type="number" id="llm_tools.web_search_max_results" min="1" max="10" /></div>
+    <p class="hint">被 @ 时模型可按需调用工具（查时间、联网搜索、翻本群历史语料），
+      <strong>群内自动接话永远不带工具</strong>，免得一次闲聊就多烧几轮调用。
+      「最多工具轮数」与「单次工具超时」是硬闸。<br />
+      联网搜索需要 <code>.env</code> 里的 <code>TAVILY_API_KEY</code>（密钥不进配置文件，
+      因为面板接口会把它原样吐出来）；没配时模型会如实说没配好，不会编造搜索结果。<br />
+      「按意图筛工具」开启后只在话题沾边时带上对应工具；
+      「允许模型发现低频工具」会给模型一个 <code>tools.find</code> 去现场找低频工具。</p>
+    <div class="actions-inline">
+      <button class="ghost" id="btnTools">查看已注册工具</button>
+      <span class="hint2" id="toolsState"></span>
+    </div>
+    <div id="toolsBox" style="display:none;margin-top:12px"></div>
   </section>
 
   <section class="card" data-page="style">
@@ -195,9 +227,17 @@
     <div class="row"><label>拉黑句（每行一个）</label><textarea id="repeat.blocked_answers" data-lines="1"></textarea></div>
     <div class="row"><label>不学习的用户（每行一个）</label><textarea id="repeat.ignored_users" data-lines="1"></textarea></div>
     <div class="row"><label>机器人发言后静默(秒)</label><input type="number" id="repeat.quiet_after_reply_seconds" min="0" /></div>
+    <div class="row"><label>命中接话对就直发</label><input type="checkbox" id="repeat.pairs_reply.enabled" /></div>
+    <div class="row"><label>接话对触发概率(0~1)</label><input type="number" id="repeat.pairs_reply.probability" step="0.05" min="0" max="1" /></div>
+    <div class="row"><label>相似度下限(0~1)</label><input type="number" id="repeat.pairs_reply.min_score" step="0.02" min="0" max="1" /></div>
+    <div class="row"><label>接话长度上限</label><input type="number" id="repeat.pairs_reply.max_chars" min="1" /></div>
     <p class="hint">复读只说群里已经出现过的话，不调用模型。屏蔽词命中即不学也不复读；
       在下面的消息列表里点「拉黑此句」可自动写入「拉黑句」。
-      「机器人发言后静默」用于避让 AI 回复，防止两套回复同时出声。</p>
+      「机器人发言后静默」用于避让 AI 回复，防止两套回复同时出声。<br />
+      <strong>「命中接话对就直发」补的是一块结构缺口</strong>：接话对原先只喂给 AI 调语气，
+      从不参与「要不要说话」的决策，所以“命中接话对也不插话”是必然的。
+      开启后用当前消息去接话对里做向量召回，命中就把当年那句接话发出去
+      —— 发不发仍受下面的冷却、去重、屏蔽词约束。相似度下限调低会更话多。</p>
   </section>
 
   <section class="card" data-page="data">
@@ -766,6 +806,38 @@ $("pairsList").addEventListener("click", async (ev) => {
 
 loadGroups();
 refreshDistill();
+
+// ---------------- 工具注册表（@ 对话的 function calling）----------------
+async function loadTools() {
+  try {
+    const r = await fetch("/api/tools");
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "获取失败");
+    const list = d.tools || [];
+    $("toolsState").textContent =
+      (d.enabled ? "" : "⚠ 工具调用已关闭｜") + `${list.length} 个已注册工具`;
+    $("toolsBox").innerHTML = list.length
+      ? list
+          .map(
+            (t) =>
+              `<div style="padding:6px 0"><code>${t.name}</code>` +
+              `<span class="hint2"> · ${t.visibility === "deferred" ? "触发才带" : "相关即带"}` +
+              ` · ${t.source}${t.read_only ? " · 只读" : ""}</span>` +
+              `<div class="hint2">${t.description}</div></div>`
+          )
+          .join("")
+      : `<div class="hint2">没有注册任何工具。</div>`;
+  } catch (e) {
+    $("toolsState").textContent = "获取失败：" + e.message;
+  }
+}
+$("btnTools").onclick = async () => {
+  const box = $("toolsBox");
+  const show = box.style.display === "none";
+  box.style.display = show ? "block" : "none";
+  if (show) await loadTools();
+};
+loadTools();
 
 // ---------------- QQ / NapCat 登录状态 ----------------
 let lastQrMtime = 0;

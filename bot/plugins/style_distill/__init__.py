@@ -260,6 +260,64 @@ async def retrieve(
     return picked
 
 
+async def retrieve_replies(
+    group_id: str, query: str, top_k: int = 3, min_score: float = 0.0
+) -> list[tuple[str, str, float]]:
+    """返回 `(前句, 接话, 相似度)`，供「命中就直接开口」使用。
+
+    与 `retrieve()` 的分工：`retrieve()` 面向**提示词注入**，返回拼好的
+    `前句 → 接话` 文本；这里要的是**能直接发出去的接话正文**加原始分数，
+    好让调用方按阈值决定到底发不发。
+
+    `min_score` 只在有向量时生效；退回字符 2-gram 时分数无意义，此时沿用
+    `retrieve()` 的「相似度 > 0」筛选。
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    rows = db.load_style_pairs(group_id)
+    if not rows:
+        return []
+
+    matrix, _ctx, _rep = await asyncio.to_thread(_get_matrix, group_id)
+    contexts = [str(r["context"]) for r in rows]
+    replies = [str(r["reply"]) for r in rows]
+
+    has_vectors = matrix.shape[0] == len(rows) and matrix.shape[0] > 0
+    if has_vectors:
+        retrieval = config.get("retrieval", {}) or {}
+        embedder = get_embedder(str(retrieval.get("embed_model", "BAAI/bge-m3")))
+        query_vec = await asyncio.to_thread(embedder.encode, [query])
+        if query_vec.shape[0] != 1:
+            return []
+        norm = float(np.linalg.norm(query_vec[0])) or 1.0
+        sims = matrix @ (query_vec[0] / norm)
+        order = [int(i) for i in np.argsort(-sims)]
+        scores = [float(x) for x in sims]
+    else:
+        scored = [
+            (_ngram_similarity(query, context), index)
+            for index, context in enumerate(contexts)
+        ]
+        scored.sort(key=lambda item: -item[0])
+        order = [index for _sim, index in scored if _sim > 0]
+        scores = [0.0] * len(rows)
+
+    out: list[tuple[str, str, float]] = []
+    seen: set[str] = set()
+    for index in order:
+        reply = replies[index].strip()
+        if not reply or reply in seen:
+            continue
+        if has_vectors and min_score > 0 and scores[index] < min_score:
+            continue
+        seen.add(reply)
+        out.append((contexts[index], reply, scores[index]))
+        if len(out) >= max(1, top_k):
+            break
+    return out
+
+
 def invalidate(group_id: str | None = None) -> None:
     if group_id is None:
         _cache.clear()

@@ -77,6 +77,18 @@ qqbot/
   因此有 `trigger.semantic.max_per_minute`（每群每分钟判定次数上限，超出后只响应直接点名）；
   `trigger.aliases` 填机器人昵称/别名，判定时可识别点名。私聊不受 `mode` 影响。
 
+**「大群插话少」的三个真实原因**（都在面板「触发」/「限流」/「学习型复读」里）
+
+1. **接话对不参与开口决策**：`style_pairs` 只喂给模型调语气，从不决定“要不要说话”。
+   所以“命中接话对也不插话”是结构性的，不是 bug——现在由 `repeat.pairs_reply` 补上（见下）。
+2. **判定额度会被打满**：大群几十条/分钟时，`max_per_minute` 会在几秒内被打满，
+   之后整分钟连判定都不做。请按群活跃度量级给（60~120）。
+3. **限流是硬上限**：`rate_limit.per_group_seconds` 默认 15 秒 → 每群最多 4 条/分钟；
+   它排在判定之后，所以判定通过也可能正落在冷却窗口里被丢掉。
+
+另外 `trigger.semantic.allow_chitchat`（默认开）决定判定是否允许“群里有个好接的梗就插一句”；
+关掉会退化成“只在被点名时说话”，基本不会主动插话。
+
 **分行发送（`humanize`）**
 
 - 提示词要求模型「一行一句」，发送侧 [ai_chat](bot/plugins/ai_chat/__init__.py) 就把每一行**拆成一条独立消息**发出去
@@ -109,6 +121,10 @@ qqbot/
 - **学舌接话**：把「前一句的关键词 → 这一句」记一次账（`qqbot_core/keywords.py` 用「CJK 二元组 + 拉丁词」
   近似分词，替代 Pallas 的 jieba），之后遇到同桶新消息时按 `learn_reply_probability` 抽一条学到的接话复述，
   权重为「常用度（封顶 10）× 新鲜度」；
+- **接话对直发（`repeat.pairs_reply`）**：拿当前消息去 `style_pairs` 做向量召回，命中历史上很像的一句
+  就把**当年那句接话**发出去。这条补的正是上面说的结构缺口——接话对原先只调语气、不决定开口，
+  相当于 Pallas-Bot 里 Repeater 扮演的角色。扇控制复用 `repeat` 的冷却/去重/屏蔽词；
+  `probability`（每条消息触发概率）、`min_score`（余弦下限，调低更话多）、`max_chars`。
 - **安全阀**：群功能开关、总开关、`cooldown_seconds` 同群冷却、`duplicate_window` 近期重复抑制、
   `max_answer_chars` 长度上限、`quiet_after_reply_seconds` 避让（机器人刚在群里发过言后这段时间不再
   复读，避免与 ai_chat 的回复同时出声）；
@@ -126,6 +142,32 @@ qqbot/
 - 召回优先用 bge-m3 向量；模型不可用时退回**字符 2-gram 相似度**（Pallas 用的也是这个）；
 - `style.distill.llm_filter=true` 可让模型再判一遍候选对的可迁移性（更接近 Pallas 的做法，按量计费，默认关）；
 - 面板可浏览/删除单条接话对；清空某群记录时，该群的接话对与复读学习表会一并清除。
+
+**工具调用（`llm_tools`）** —— 只在被 @ 时启用（`only_when_addressed`），群内自动接话永远不带工具
+
+- 走标准 **function calling**（已实测 `deepseek-flash` / `deepseek-chat` 都支持，思考开关都行）。
+  多轮工具循环在 [ai_chat](bot/plugins/ai_chat/__init__.py) 的 `_tool_loop()` 里，`max_rounds` 与
+  `timeout_sec` 是硬闸；轮数用尽会**不带工具**再要一次答复，逼模型用现有信息收口，
+  而不是一直想着调工具却给不出话。
+- 工具注册表在 [qqbot_core/tools.py](bot/qqbot_core/tools.py)：
+
+  | 工具 | 可见性 | 说明 |
+  | --- | --- | --- |
+  | `time.now` | 相关即带 | 当前日期 / 时间 / 星期 |
+  | `web.search` | 相关即带 | 联网搜索（Tavily 兼容接口） |
+  | `group.search` | 相关即带 | 在本群历史语料里做**语义检索**（翻旧账） |
+  | `tools.find` | 总是带 | 让模型现场发现低频工具 |
+
+- **可见性**（省 token 的关键，思路参考 Pallas-Bot）：`visible` 只在话题沾边时带上；
+  `deferred` 平时不带，模型可调 `tools.find` 现场发现，发现后本轮后续调用一直可用。
+  群里问“你会啥 / 有什么功能”时会把**只读**工具整批放开，免得模型空口编造自己的能力。
+- **联网搜索**：接口地址在面板可改；**密钥只从环境变量 `TAVILY_API_KEY` 读**（见 `.env.example`），
+  不进 `config.json`——因为面板的 `/api/config` 会把配置原样吐出来。
+  没配时 `web.search` 返回一句“如实告诉用户搜不了，不要编造”，而不是抛错死掉。
+- 面板「工具调用（被 @ 时）」卡片里有「查看已注册工具」按钮（`GET /api/tools`），
+  可看当前注册了哪些工具，以及某句话会带上哪些（`/api/tools?text=...`）。
+- 新增工具只需在插件 import 时 `qqbot_core.tools.register(...)`，需要读本群语料的工具参考
+  `ai_chat.register_tools()` 里 `group.search` 的写法（群号用 ContextVar 传，不塞进工具参数）。
 
 ---
 
