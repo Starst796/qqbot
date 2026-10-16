@@ -54,6 +54,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     ts       REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(conv_key, id);
+
+-- 学习型复读：关键词桶 -> 学到的接话（count 越大越常用）
+CREATE TABLE IF NOT EXISTS repeat_learn (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id TEXT NOT NULL,
+    keywords TEXT NOT NULL,
+    answer   TEXT NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 1,
+    ts       REAL NOT NULL,
+    UNIQUE(group_id, keywords, answer)
+);
+CREATE INDEX IF NOT EXISTS idx_repeat_learn_lookup ON repeat_learn(group_id, keywords);
+
+-- 风格蒸馏：从真实相邻对话里抽出的「前句 -> 接话」对
+CREATE TABLE IF NOT EXISTS style_pairs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id   TEXT NOT NULL,
+    context    TEXT NOT NULL,
+    reply      TEXT NOT NULL,
+    score      REAL NOT NULL DEFAULT 1.0,
+    source     TEXT NOT NULL DEFAULT 'heuristic',
+    dim        INTEGER NOT NULL DEFAULT 0,
+    vec        BLOB,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_style_pairs_group ON style_pairs(group_id);
 """
 
 # FTS5 是 embedding 不可用时的降级检索方案。trigram 需 SQLite >= 3.34，
@@ -243,6 +269,179 @@ def get_session(conv_key: str, turns: int) -> list[dict[str, str]]:
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
 
+# --------------------------------------------------------------------------- #
+# 学习型复读（repeat_learn）
+# --------------------------------------------------------------------------- #
+def learn_repeat_answer(
+    group_id: str, keywords: str, answer: str, ts: float | None = None
+) -> None:
+    """记一次「关键词桶 -> 接话」；同一对重复出现则 count+1。"""
+    if not keywords or not answer:
+        return
+    conn = connect()
+    with _lock:
+        conn.execute(
+            "INSERT INTO repeat_learn(group_id, keywords, answer, count, ts) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(group_id, keywords, answer) "
+            "DO UPDATE SET count = count + 1, ts = excluded.ts",
+            (group_id, keywords, answer, 1, ts or time.time()),
+        )
+        conn.commit()
+
+
+def repeat_answers(group_id: str, keywords: str, limit: int = 32) -> list[sqlite3.Row]:
+    """取某个关键词桶下的候选取话（按常用度、新鲜度排序）。"""
+    if not keywords:
+        return []
+    conn = connect()
+    with _lock:
+        return list(
+            conn.execute(
+                "SELECT answer, count, ts FROM repeat_learn "
+                "WHERE group_id = ? AND keywords = ? "
+                "ORDER BY count DESC, ts DESC LIMIT ?",
+                (group_id, keywords, max(1, limit)),
+            )
+        )
+
+
+def prune_repeat_learn(group_id: str, keep_per_bucket: int) -> int:
+    """每个关键词桶只保留最常用的 keep_per_bucket 条，防止桶无限膨胀。"""
+    conn = connect()
+    with _lock:
+        cur = conn.execute(
+            "DELETE FROM repeat_learn WHERE group_id = ? AND id NOT IN ("
+            "  SELECT id FROM ("
+            "    SELECT id, ROW_NUMBER() OVER ("
+            "      PARTITION BY keywords ORDER BY count DESC, ts DESC"
+            "    ) AS rn FROM repeat_learn WHERE group_id = ?"
+            "  ) WHERE rn <= ?"
+            ")",
+            (group_id, group_id, max(1, keep_per_bucket)),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def clear_repeat_learn(group_id: str | None = None) -> int:
+    conn = connect()
+    with _lock:
+        cur = (
+            conn.execute("DELETE FROM repeat_learn WHERE group_id = ?", (group_id,))
+            if group_id is not None
+            else conn.execute("DELETE FROM repeat_learn")
+        )
+        removed = int(cur.rowcount or 0)
+        conn.commit()
+    return removed
+
+
+def repeat_learn_stats() -> dict[str, Any]:
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT group_id, COUNT(*) AS entries, COUNT(DISTINCT keywords) AS buckets, "
+                "SUM(count) AS learned FROM repeat_learn GROUP BY group_id"
+            )
+        )
+    return {
+        r["group_id"]: {
+            "entries": int(r["entries"]),
+            "buckets": int(r["buckets"]),
+            "learned": int(r["learned"] or 0),
+        }
+        for r in rows
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 风格蒸馏（style_pairs）
+# --------------------------------------------------------------------------- #
+def replace_style_pairs(group_id: str, rows: list[tuple]) -> int:
+    """整体替换某群的接话对。rows: (context, reply, score, source, dim, vec)。"""
+    conn = connect()
+    now = time.time()
+    with _lock:
+        conn.execute("DELETE FROM style_pairs WHERE group_id = ?", (group_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO style_pairs"
+                "(group_id, context, reply, score, source, dim, vec, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                [
+                    (group_id, ctx, rep, float(score), str(source), int(dim), vec, now)
+                    for ctx, rep, score, source, dim, vec in rows
+                ],
+            )
+        conn.commit()
+    return len(rows)
+
+
+def load_style_pairs(group_id: str) -> list[sqlite3.Row]:
+    """取出某群全部接话对（含向量，供检索用）。"""
+    conn = connect()
+    with _lock:
+        return list(
+            conn.execute(
+                "SELECT id, context, reply, dim, vec FROM style_pairs "
+                "WHERE group_id = ? ORDER BY id",
+                (group_id,),
+            )
+        )
+
+
+def list_style_pairs(group_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """供面板浏览（不返回向量）。"""
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT id, context, reply, score, source, created_at FROM style_pairs "
+                "WHERE group_id = ? ORDER BY score DESC, id DESC LIMIT ?",
+                (group_id, max(1, limit)),
+            )
+        )
+    return [dict(r) for r in rows]
+
+
+def delete_style_pairs(ids: list[int]) -> int:
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    conn = connect()
+    with _lock:
+        cur = conn.execute(f"DELETE FROM style_pairs WHERE id IN ({marks})", list(ids))
+        removed = int(cur.rowcount or 0)
+        conn.commit()
+    return removed
+
+
+def clear_style_pairs(group_id: str | None = None) -> int:
+    conn = connect()
+    with _lock:
+        cur = (
+            conn.execute("DELETE FROM style_pairs WHERE group_id = ?", (group_id,))
+            if group_id is not None
+            else conn.execute("DELETE FROM style_pairs")
+        )
+        removed = int(cur.rowcount or 0)
+        conn.commit()
+    return removed
+
+
+def style_pair_stats() -> dict[str, int]:
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT group_id, COUNT(*) AS pairs FROM style_pairs GROUP BY group_id"
+            )
+        )
+    return {r["group_id"]: int(r["pairs"]) for r in rows}
+
+
 def stats() -> dict[str, Any]:
     conn = connect()
     with _lock:
@@ -254,11 +453,15 @@ def stats() -> dict[str, Any]:
             "SELECT COUNT(DISTINCT group_id) AS c FROM messages WHERE group_id IS NOT NULL"
         ).fetchone()["c"]
         last = conn.execute("SELECT MAX(ts) AS t FROM messages").fetchone()["t"]
+        learned = conn.execute("SELECT COUNT(*) AS c FROM repeat_learn").fetchone()["c"]
+        pairs = conn.execute("SELECT COUNT(*) AS c FROM style_pairs").fetchone()["c"]
     return {
         "messages": int(total),
         "vectors": int(embedded),
         "groups": int(groups),
         "last_message_ts": float(last) if last else None,
+        "repeat_entries": int(learned),
+        "style_pairs": int(pairs),
         "db_path": str(DB_PATH),
     }
 

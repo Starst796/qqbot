@@ -121,6 +121,65 @@ def _register(app) -> None:
         logger.info("admin_panel: 已请求重启服务")
         return _json({"ok": True, "message": "服务将在约 1 秒后重启"})
 
+    # ---- 风格蒸馏（接话对）----
+    @app.get("/api/style/status")
+    async def _style_status():
+        try:
+            from plugins.style_distill import status
+        except Exception as exc:  # noqa: BLE001
+            return _json({"ok": False, "error": str(exc)}, status=500)
+        return _json({"ok": True, "status": status()})
+
+    @app.post("/api/style/rebuild")
+    async def _style_rebuild(request: Request):
+        """触发后台重建；立即返回，进度用 /api/style/status 查。"""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        group_id = str((body or {}).get("group_id") or "") or None
+        try:
+            from plugins.style_distill import start_rebuild
+        except Exception as exc:  # noqa: BLE001
+            return _json({"ok": False, "error": str(exc)}, status=500)
+        started = start_rebuild(group_id)
+        if not started:
+            return _json({"ok": False, "error": "已有重建任务在运行"}, status=409)
+        logger.info(f"admin_panel: 已触发风格蒸馏重建 group={group_id or '全部'}")
+        return _json({"ok": True, "message": "重建已在后台开始"})
+
+    @app.get("/api/style/pairs")
+    async def _style_pairs(group_id: str, limit: int = 50):
+        return _json(
+            {
+                "ok": True,
+                "pairs": db.list_style_pairs(group_id, limit),
+                "total": db.style_pair_stats().get(group_id, 0),
+            }
+        )
+
+    @app.post("/api/style/delete")
+    async def _style_delete(request: Request):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        raw = (body or {}).get("ids") if isinstance(body, dict) else None
+        ids = (
+            [int(i) for i in raw if str(i).lstrip("-").isdigit()]
+            if isinstance(raw, list)
+            else []
+        )
+        removed = db.delete_style_pairs(ids)
+        try:
+            from plugins.style_distill import invalidate
+
+            invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info(f"admin_panel: 删除接话对 {removed} 条")
+        return _json({"ok": True, "deleted": removed})
+
     # ---- 上下文 / 数据管理 ----
     @app.get("/api/context/groups")
     async def _ctx_groups():
@@ -178,12 +237,22 @@ def _register(app) -> None:
         deleted = cleared = 0
         if scope in ("messages", "both"):
             deleted = db.delete_messages(group_id=group_id, user_id=user_id, ids=ids)
+            # 复读学习表与接话对都是从这些消息派生出来的，一起清掉免得留下脏数据
+            if not ids and not user_id:
+                db.clear_repeat_learn(group_id)
+                db.clear_style_pairs(group_id)
         if scope in ("sessions", "both"):
             cleared = db.clear_sessions(group_id=group_id, user_id=user_id)
         try:
             from plugins.rag import invalidate
 
             invalidate(group_id)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from plugins.style_distill import invalidate as invalidate_pairs
+
+            invalidate_pairs(group_id)
         except Exception:  # noqa: BLE001
             pass
 

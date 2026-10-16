@@ -101,11 +101,54 @@
   </section>
 
   <section class="card">
-    <h2>风格注入（RAG）</h2>
+    <h2>风格注入（RAG / 接话对）</h2>
     <div class="row"><label>启用历史风格</label><input type="checkbox" id="style.enabled" /></div>
+    <div class="row"><label>注入来源</label>
+      <select id="style.mode">
+        <option value="auto">auto —— 有接话对就用它，否则用历史原句</option>
+        <option value="raw">raw —— 只用历史原句</option>
+        <option value="pairs">pairs —— 只用蒸馏出的接话对</option>
+      </select>
+    </div>
     <div class="row"><label>检索条数 top-k</label><input type="number" id="style.top_k" min="0" /></div>
     <div class="row"><label>片段长度上限</label><input type="number" id="style.max_chars" min="0" /></div>
     <div class="row"><label>上下文轮数</label><input type="number" id="style.context_turns" min="0" /></div>
+    <div class="row"><label>接话对注入条数</label><input type="number" id="style.distill.top_k" min="1" /></div>
+    <div class="row"><label>每组接话对上限</label><input type="number" id="style.distill.max_pairs" min="1" /></div>
+    <div class="row"><label>重建时扫描消息数</label><input type="number" id="style.distill.scan_messages" min="10" /></div>
+    <div class="row"><label>模型过滤候选对</label><input type="checkbox" id="style.distill.llm_filter" /></div>
+    <p class="hint">接话对由真实相邻对话抽取（越像接话分越高），重建是离线动作——点下面的按钮触发。</p>
+    <div class="actions-inline">
+      <button class="ghost" id="btnDistill">重建全部群的接话对</button>
+      <span class="hint2" id="distillState"></span>
+    </div>
+    <div class="actions-inline" style="margin-top:10px">
+      <input type="text" id="pairsGroup" placeholder="群号" style="max-width:150px" />
+      <button class="ghost" id="btnPairs">查看该群接话对</button>
+      <button class="ghost" id="btnRebuildOne">只重建该群</button>
+    </div>
+    <div id="pairsBox" style="display:none;margin-top:14px">
+      <h2 id="pairsTitle"></h2>
+      <div id="pairsList"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>学习型复读</h2>
+    <div class="row"><label>启用复读</label><input type="checkbox" id="repeat.enabled" /></div>
+    <div class="row"><label>跟读阈值（连续 N 条）</label><input type="number" id="repeat.threshold" min="2" /></div>
+    <div class="row"><label>同群冷却(秒)</label><input type="number" id="repeat.cooldown_seconds" min="0" /></div>
+    <div class="row"><label>近期重复抑制条数</label><input type="number" id="repeat.duplicate_window" min="1" /></div>
+    <div class="row"><label>学习「前句→接话」</label><input type="checkbox" id="repeat.learn_enabled" /></div>
+    <div class="row"><label>按概率学舌接话</label><input type="checkbox" id="repeat.learn_replies" /></div>
+    <div class="row"><label>学舌触发概率(0~1)</label><input type="number" id="repeat.learn_reply_probability" step="0.05" min="0" max="1" /></div>
+    <div class="row"><label>屏蔽词（每行一个）</label><textarea id="repeat.blocked_words" data-lines="1"></textarea></div>
+    <div class="row"><label>拉黑句（每行一个）</label><textarea id="repeat.blocked_answers" data-lines="1"></textarea></div>
+    <div class="row"><label>不学习的用户（每行一个）</label><textarea id="repeat.ignored_users" data-lines="1"></textarea></div>
+    <div class="row"><label>机器人发言后静默(秒)</label><input type="number" id="repeat.quiet_after_reply_seconds" min="0" /></div>
+    <p class="hint">复读只说群里已经出现过的话，不调用模型。屏蔽词命中即不学也不复读；
+      在下面的消息列表里点「拉黑此句」可自动写入「拉黑句」。
+      「机器人发言后静默」用于避让 AI 回复，防止两套回复同时出声。</p>
   </section>
 
   <section class="card">
@@ -191,6 +234,7 @@ function fillForm(cfg) {
     const val = getByPath(cfg, path);
     if (val === undefined) return;
     if (el.type === "checkbox") el.checked = !!val;
+    else if (el.dataset.lines) el.value = Array.isArray(val) ? val.join("\n") : val;
     else if (el.dataset.csv) el.value = Array.isArray(val) ? val.join(",") : val;
     else el.value = val;
   });
@@ -203,6 +247,7 @@ function collectForm() {
     if (!path.includes(".") && !["enabled","model","temperature","max_tokens","thinking","system_prompt"].includes(path)) return;
     let value;
     if (el.type === "checkbox") value = el.checked;
+    else if (el.dataset.lines) value = el.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     else if (el.dataset.csv) value = el.value.split(",").map(s => s.trim()).filter(Boolean);
     else if (el.type === "number") value = el.value === "" ? 0 : Number(el.value);
     else value = el.value;
@@ -232,7 +277,9 @@ async function loadStats() {
   $("stats").innerHTML =
     `<div><b>${s.messages ?? 0}</b>消息</div>` +
     `<div><b>${s.vectors ?? 0}</b>向量</div>` +
-    `<div><b>${s.groups ?? 0}</b>群</div>`;
+    `<div><b>${s.groups ?? 0}</b>群</div>` +
+    `<div><b>${s.repeat_entries ?? 0}</b>复读学习</div>` +
+    `<div><b>${s.style_pairs ?? 0}</b>接话对</div>`;
 }
 
 async function save(reload) {
@@ -380,11 +427,37 @@ async function viewMessages(gid) {
       `<span class="who">${m.is_bot ? "[bot] " : ""}${escapeHtml(who)}</span>` +
       `<span class="txt">${escapeHtml(m.content)}</span>` +
       `<span class="t">${fmtTime(m.ts)}</span>` +
+      `<button class="ghost mini" data-block="${encodeURIComponent(m.content)}">拉黑此句</button>` +
       `<button class="ghost mini" data-del="${m.id}">删除</button>`;
     box.appendChild(div);
   }
   $("msgBox").style.display = "block";
 }
+
+// 拉黑此句：追加到 repeat.blocked_answers，复读不再说这句
+$("msgList").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-block]");
+  if (!btn) return;
+  const text = decodeURIComponent(btn.dataset.block).trim();
+  if (!text) return;
+  if (!confirm(`把「${text.slice(0, 30)}」加入复读拉黑句？`)) return;
+  try {
+    const cfg = JSON.parse(JSON.stringify(CONFIG));
+    cfg.repeat = cfg.repeat || {};
+    const list = Array.isArray(cfg.repeat.blocked_answers) ? cfg.repeat.blocked_answers : [];
+    if (!list.includes(text)) list.push(text);
+    cfg.repeat.blocked_answers = list;
+    const r = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "保存失败");
+    fillForm(d.config);
+    toast("已拉黑，复读不会再复述这句");
+  } catch (e) { toast(e.message, true); }
+});
 
 $("msgList").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-del]");
@@ -421,7 +494,96 @@ $("btnClearAll").onclick = async () => {
   $("msgBox").style.display = "none";
 };
 
+// ---------------- 风格蒸馏（接话对） ----------------
+async function refreshDistill() {
+  try {
+    const r = await fetch("/api/style/status");
+    const d = await r.json();
+    const s = d.status || {};
+    const counts = Object.entries(s.pairs_by_group || {})
+      .map(([g, n]) => `${g}:${n}`).join("  ") || "（暂无）";
+    if (s.running) {
+      $("distillState").textContent =
+        `重建中… ${s.groups_done}/${s.groups_total} 组，已生成 ${s.pairs} 条`;
+    } else {
+      let text = `每组接话对：${counts}`;
+      if (s.error) text += `｜上次出错：${s.error}`;
+      else if (s.finished_at) text += `｜上次完成 ${fmtTime(s.finished_at)}`;
+      $("distillState").textContent = text;
+    }
+    return s.running;
+  } catch (e) {
+    $("distillState").textContent = "状态获取失败";
+    return false;
+  }
+}
+
+async function startDistill(groupId) {
+  const r = await fetch("/api/style/rebuild", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(groupId ? { group_id: groupId } : {}),
+  });
+  const d = await r.json();
+  if (!d.ok) return toast(d.error || "启动失败", true);
+  toast("已在后台开始重建，进度见下方状态");
+  const tick = setInterval(async () => {
+    if (!(await refreshDistill())) {
+      clearInterval(tick);
+      loadStats();
+      if (groupId) viewPairs(groupId);
+    }
+  }, 3000);
+}
+
+$("btnDistill").onclick = () => startDistill("");
+$("btnRebuildOne").onclick = () => {
+  const gid = $("pairsGroup").value.trim();
+  if (!gid) return toast("请先填群号", true);
+  startDistill(gid);
+};
+$("btnPairs").onclick = () => {
+  const gid = $("pairsGroup").value.trim();
+  if (!gid) return toast("请先填群号", true);
+  viewPairs(gid);
+};
+
+async function viewPairs(gid) {
+  const r = await fetch(`/api/style/pairs?group_id=${encodeURIComponent(gid)}&limit=50`);
+  const d = await r.json();
+  const list = d.pairs || [];
+  $("pairsTitle").textContent = `群 ${gid} · 接话对 ${list.length}/${d.total ?? 0} 条`;
+  const box = $("pairsList");
+  box.innerHTML = list.length ? "" : '<div class="msg" style="color:var(--mut)">无（点「只重建该群」生成）</div>';
+  for (const p of list) {
+    const div = document.createElement("div");
+    div.className = "msg";
+    div.innerHTML =
+      `<span class="who">${p.score}</span>` +
+      `<span class="txt">${escapeHtml(p.context)} <b style="color:var(--acc)">→</b> ${escapeHtml(p.reply)}</span>` +
+      `<span class="t">${p.source}</span>` +
+      `<button class="ghost mini" data-pair-del="${p.id}">删除</button>`;
+    box.appendChild(div);
+  }
+  $("pairsBox").style.display = "block";
+}
+
+$("pairsList").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-pair-del]");
+  if (!btn) return;
+  const r = await fetch("/api/style/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: [Number(btn.dataset.pairDel)] }),
+  });
+  const d = await r.json();
+  if (!d.ok) return toast("删除失败", true);
+  btn.closest(".msg").remove();
+  toast("已删除该接话对");
+});
+
 loadGroups();
+refreshDistill();
 </script>
 </body>
 </html>

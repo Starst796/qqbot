@@ -8,6 +8,7 @@ core 层刻意不依赖 NoneBot 适配器，这里只按 OneBot 消息段的通�
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any, Iterable
 
 import httpx
@@ -66,6 +67,15 @@ def placeholders(message: Any) -> str:
     return " ".join(
         f"[{label}x{n}]" if n > 1 else f"[{label}]" for label, n in counts.items()
     )
+
+
+_PLACEHOLDER_ONLY = re.compile(r"^(?:\[[^\]]+\](?:\s*x\s*\d+)?[\s,，、]*)+$")
+
+
+def is_placeholder_only(text: str) -> bool:
+    """判断一条内容是否只剩占位符（`[图片]`、`[表情x2]` 之类），没有真实文本。"""
+    stripped = (text or "").strip()
+    return bool(stripped) and bool(_PLACEHOLDER_ONLY.match(stripped))
 
 
 def image_sources(message: Any) -> list[str]:

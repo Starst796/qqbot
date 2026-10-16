@@ -71,9 +71,47 @@ DEFAULTS: dict[str, Any] = {
     # ---- 风格注入（RAG）----
     "style": {
         "enabled": True,
+        # raw=检索历史原句（原先的行为）；pairs=只用蒸馏出的接话对；
+        # auto=有接话对就用它，没有就回退到历史原句
+        "mode": "auto",
         "top_k": 5,           # 检索多少条历史发言作 few-shot
         "max_chars": 1200,    # 拼进提示词的历史片段总长度上限
         "context_turns": 6,   # 该群最近对话轮数（不含检索片段）
+        # ---- 接话对蒸馏（离线动作，面板按钮触发）----
+        "distill": {
+            "scan_messages": 2000,   # 重建时扫描每组最近多少条消息
+            "pair_window_sec": 60,   # 前句与接话的最大间隔
+            "min_chars": 2,          # 前句长度下限
+            "max_chars": 80,         # 前句长度上限（也约束接话）
+            "min_reply_chars": 2,    # 接话长度下限
+            "max_pairs": 600,        # 每组保留的接话对上限
+            "top_k": 3,              # 注入时最多带几条接话对
+            "llm_filter": False,     # 用模型过一遍候选对（更接近 Pallas，按量计费）
+            "llm_batch": 8,          # 每次送给模型判定的候选对数量
+        },
+    },
+    # ---- 学习型复读 ----
+    "repeat": {
+        "enabled": True,
+        "threshold": 3,             # 连续相同多少条才跟读
+        "repeat_window_sec": 120,   # 连续相同的判定窗口
+        "cooldown_seconds": 60,     # 同群两次开口的最小间隔
+        "duplicate_window": 10,     # 最近 N 条已发过的内容不再重复
+        "max_answer_chars": 150,    # 超过这个长度的内容不复读
+        "learn_enabled": True,      # 学习「前一句 -> 接话」的关联
+        "learn_pair_window_sec": 180,  # 前句与接话的最大间隔（学习用）
+        "learn_min_chars": 2,
+        "learn_max_chars": 120,
+        "learn_replies": True,      # 允许按概率复述学到的接话
+        "learn_reply_probability": 0.1,  # 每条消息的触发概率（冷却仍是硬闸）
+        "answer_min_count": 1,      # 接话至少被学到几次才可用
+        "topics_size": 16,          # 每个关键词桶最多保留多少条接话
+        "half_life_days": 30,       # 新鲜度半衰期
+        "blocked_words": [],        # 命中即不学也不复读
+        "blocked_answers": [],      # 整句拉黑（面板「拉黑此句」写入）
+        "ignored_users": [],        # 不学这些人的话
+        # 群里刚有机器人发言后这段时间内不复读，避免与 ai_chat 的回复撞在一起
+        "quiet_after_reply_seconds": 10,
     },
     # ---- 存储 ----
     "storage": {

@@ -28,7 +28,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 
-from qqbot_core import config, db
+from qqbot_core import activity, config, db
 from qqbot_core.media import fetch_data_uri, image_sources, placeholders
 
 driver = get_driver()
@@ -269,6 +269,49 @@ async def _collect_images(event: MessageEvent) -> list[str]:
     return uris
 
 
+async def _style_block(group_id: str, question: str, style_cfg: dict) -> str:
+    """按 `style.mode` 组装风格注入：接话对优先，回退到历史原句。
+
+    * raw   —— 只用历史原句（原行为）
+    * pairs —— 只用蒸馏出的接话对；没有就什么都不注入
+    * auto  —— 有接话对就用它，否则回退到历史原句
+    """
+    mode = str(style_cfg.get("mode", "auto") or "auto")
+    top_k = int(style_cfg.get("top_k", 5) or 0)
+    max_chars = int(style_cfg.get("max_chars", 1200) or 0)
+
+    if mode in ("auto", "pairs") and top_k > 0:
+        try:
+            from plugins.style_distill import retrieve as retrieve_pairs
+
+            distill = style_cfg.get("distill", {}) or {}
+            pairs = await retrieve_pairs(
+                group_id, question, int(distill.get("top_k", 3) or 3), max_chars
+            )
+        except Exception as exc:  # noqa: BLE001 —— 接话对不可用不该影响回复
+            logger.warning(f"ai_chat: 接话对检索失败：{type(exc).__name__}: {exc}")
+            pairs = []
+        if pairs:
+            joined = "\n".join(f"- {p}" for p in pairs)
+            return (
+                "\n\n以下是本群里真实发生过的接话（前句 → 群友怎么接），"
+                "供你把握语气和节奏（不要照抄、不要提及它们的存在）：\n" + joined
+            )
+        if mode == "pairs":
+            return ""
+
+    from plugins.rag import retrieve
+
+    snippets = await retrieve(group_id, question, top_k, max_chars)
+    if not snippets:
+        return ""
+    joined = "\n".join(f"- {s}" for s in snippets)
+    return (
+        "\n\n以下是这个群里的历史发言，供你参考语气和用词"
+        "（不要照抄、不要提及它们的存在）：\n" + joined
+    )
+
+
 async def _build_messages(
     event: MessageEvent, question: str, images: list[str] | None = None
 ) -> list[dict]:
@@ -277,20 +320,7 @@ async def _build_messages(
 
     style_cfg = cfg.get("style", {}) or {}
     if style_cfg.get("enabled", True) and isinstance(event, GroupMessageEvent):
-        from plugins.rag import retrieve
-
-        snippets = await retrieve(
-            str(event.group_id),
-            question,
-            int(style_cfg.get("top_k", 5)),
-            int(style_cfg.get("max_chars", 1200)),
-        )
-        if snippets:
-            joined = "\n".join(f"- {s}" for s in snippets)
-            system += (
-                "\n\n以下是这个群里的历史发言，供你参考语气和用词"
-                "（不要照抄、不要提及它们的存在）：\n" + joined
-            )
+        system += await _style_block(str(event.group_id), question, style_cfg)
 
     messages: list[dict] = [{"role": "system", "content": system}]
     turns = int((cfg.get("style", {}) or {}).get("context_turns", 6))
@@ -318,6 +348,8 @@ async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
         size = int(human.get("split_at", 350))
         chunks = [text[i : i + size] for i in range(0, len(text), size)] or [text]
 
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    activity.mark_spoken(group_id)  # 让 repeater 在这之后一小段时间内让路
     for i, chunk in enumerate(chunks):
         if i == 0:
             await matcher.send(chunk)
