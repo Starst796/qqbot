@@ -61,13 +61,15 @@
     <h2>QQ 登录状态</h2>
     <div class="actions-inline">
       <span class="hint2" id="qqState" style="margin:0">检查中…</span>
-      <button class="ghost" id="btnQr">刷新二维码</button>
-      <button class="ghost danger" id="btnRelogin">重新登录（重启 NapCat）</button>
+      <button class="ghost" id="btnQr">获取/刷新二维码</button>
+      <button class="ghost" id="btnNapcatRestart">重启 NapCat</button>
     </div>
     <div id="qrBox" style="display:none;margin-top:14px">
       <img id="qrImg" alt="登录二维码" />
-      <p class="hint2">用<b>已登录该 QQ 小号的手机</b>扫码授权。二维码约 1~2 分钟过期，失效就点「刷新二维码」；
-        无二维码时点「重新登录」让 NapCat 重新生成。</p>
+      <p class="hint2">用<b>已登录该 QQ 小号的手机</b>扫码授权。二维码约 1~2 分钟过期，
+        失效就点「获取/刷新二维码」。</p>
+      <p class="hint2">扫码不便时，也可在手机上直接打开：
+        <a id="qrLink" href="#" target="_blank" rel="noreferrer">登录链接</a></p>
     </div>
     <pre class="logbox" id="napcatLog">—</pre>
   </section>
@@ -640,29 +642,44 @@ async function loadNapcat() {
 }
 
 $("btnQr").onclick = async () => {
-  lastQrMtime = 0;
-  await loadNapcat();
-  toast("已刷新");
-};
-
-$("btnRelogin").onclick = async () => {
-  if (!confirm("重启 NapCat 容器以生成新的登录二维码？\n（会断开与 QQ 的连接，需要重新扫码）")) return;
-  $("qqState").textContent = "正在重启 NapCat…";
+  $("qqState").textContent = "正在获取二维码…";
   $("qqState").style.color = "var(--warn)";
   try {
-    const r = await fetch("/api/napcat/relogin", { method: "POST" });
+    const r = await fetch("/api/napcat/refresh-qr", { method: "POST" });
     const d = await r.json();
-    if (!d.ok) throw new Error(d.error || "重启失败");
+    if (!d.ok) throw new Error(d.error || "获取失败");
+    if (d.qrcode) $("qrLink").href = d.qrcode;
+    toast("二维码已更新，请在 1~2 分钟内扫码");
   } catch (e) {
     return toast(e.message, true);
   }
-  toast("NapCat 已重启，等待二维码…");
   lastQrMtime = 0;
   let tries = 0;
   const tick = setInterval(async () => {
     tries++;
     await loadNapcat();
-    if (tries >= 15) clearInterval(tick);
+    if (tries >= 8) clearInterval(tick);
+  }, 2000);
+};
+
+$("btnNapcatRestart").onclick = async () => {
+  if (!confirm("重启 NapCat 容器？\n会断开与 QQ 的连接（已登录则需重新扫码），仅在二维码刷不出来时使用。")) return;
+  $("qqState").textContent = "正在重启 NapCat…";
+  $("qqState").style.color = "var(--warn)";
+  try {
+    const r = await fetch("/api/napcat/restart", { method: "POST" });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "重启失败");
+    toast("NapCat 已重启，约 20 秒后点「获取/刷新二维码」");
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  lastQrMtime = 0;
+  let tries = 0;
+  const tick = setInterval(async () => {
+    tries++;
+    await loadNapcat();
+    if (tries >= 12) clearInterval(tick);
   }, 4000);
 };
 

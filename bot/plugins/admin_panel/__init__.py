@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
+import re
 import signal
 from pathlib import Path
 from typing import Any
@@ -53,7 +56,74 @@ def _schedule_restart(delay: float = 1.0) -> None:
 # ---------------------------------------------------------------------------
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _QR_PATH = _REPO_ROOT / "napcat" / "data" / "cache" / "qrcode.png"
+_WEBUI_CONF = _REPO_ROOT / "napcat" / "data" / "config" / "webui.json"
+_WEBUI_BASE = "http://127.0.0.1:6099"
 _QQ_CONTAINER = "qqbot-napcat"
+
+
+def _webui_token() -> str:
+    """从 NapCat 持久化的 webui.json 读 WebUI token（无需 docker）。"""
+    try:
+        data = json.loads(_WEBUI_CONF.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                yield from walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from walk(value)
+        elif isinstance(node, str):
+            yield node
+
+    if not isinstance(data, dict):
+        return ""
+    for key in ("token", "Token", "webUiToken", "webuiToken"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return value
+    # 兜底：找第一个 12 位十六进制串
+    for text in walk(data):
+        if re.fullmatch(r"[0-9a-f]{12}", text):
+            return text
+    return ""
+
+
+async def _http_json(url: str, payload: dict, timeout: float, headers: dict | None = None):
+    """POST JSON 并解析响应；任何异常都转成带 code=-1 的字典，不往上抛。"""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=payload or {}, headers=headers or {})
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"code": -1, "message": f"{type(exc).__name__}: {exc}"}
+
+
+async def _napcat_webui(path: str, payload: dict | None = None, timeout: float = 30.0):
+    """调用 NapCat WebUI API：先 sha256(token+".napcat") 登录，再带 Bearer 请求。
+
+    算法与请求头均取自 WebUI 前端打包代码（loginWithToken）。
+    """
+    token = _webui_token()
+    if not token:
+        return {"code": -1, "message": "读取 NapCat WebUI token 失败（webui.json）"}
+    digest = hashlib.sha256((token + ".napcat").encode()).hexdigest()
+    login = await _http_json(
+        f"{_WEBUI_BASE}/api/auth/login", {"hash": digest, "totpCode": ""}, timeout
+    )
+    cred = (login.get("data") or {}).get("Credential") if isinstance(login, dict) else None
+    if not cred:
+        return {"code": -1, "message": f"登录 NapCat WebUI 失败：{login}"}
+    return await _http_json(
+        f"{_WEBUI_BASE}/api{path}",
+        payload or {},
+        timeout,
+        headers={"Authorization": f"Bearer {cred}"},
+    )
 
 
 async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str]:
@@ -75,12 +145,16 @@ async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str]:
     return proc.returncode or 0, (out or b"").decode("utf-8", "replace")
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_HEX_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
+
+
 def _clean_napcat_log(text: str) -> list[str]:
-    """滤掉二维码字符画与 MMKV 噪声，只留可读行。"""
+    """滤掉颜色码、二维码字符画、哈希行与 MMKV 噪声，只留可读行。"""
     keep: list[str] = []
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("[I] "):
+        line = _ANSI_RE.sub("", raw).strip()
+        if not line or line.startswith("[I] ") or _HEX_RE.match(line):
             continue
         if any(ch in line for ch in "█▄▀▐▌") or len(line) > 200:
             continue
@@ -349,16 +423,29 @@ def _register(app) -> None:
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 
-    @app.post("/api/napcat/relogin")
-    async def _napcat_relogin():
-        """重启 NapCat 容器，逼它重新生成登录二维码。"""
+    @app.post("/api/napcat/refresh-qr")
+    async def _napcat_refresh_qr():
+        """向 NapCat WebUI API 索取登录二维码（会写入 cache/qrcode.png）。
+
+        比重启容器温和：不丢登录态、不断开连接，失败时二维码仍可扫码。
+        """
+        res = await _napcat_webui("/QQLogin/GetQQLoginQrcode")
+        if not isinstance(res, dict) or res.get("code") != 0:
+            logger.warning(f"admin_panel: 获取登录二维码失败：{res}")
+            return _json({"ok": False, "error": str(res)[:300]}, status=502)
+        data = res.get("data") or {}
+        url = data.get("qrcode") if isinstance(data, dict) else ""
+        logger.info("admin_panel: 已获取登录二维码")
+        return _json({"ok": True, "qrcode": url or "", "message": "二维码已生成"})
+
+    @app.post("/api/napcat/restart")
+    async def _napcat_restart():
+        """重启 NapCat 容器（兜底手段，会中断连接）。"""
         rc, out = await _docker("restart", _QQ_CONTAINER, timeout=120)
         logger.info(f"admin_panel: 重启 NapCat 容器 rc={rc}")
         if rc != 0:
             return _json({"ok": False, "error": out.strip()[:500]}, status=500)
-        return _json(
-            {"ok": True, "message": "NapCat 已重启，二维码生成中（约 10~20 秒）"}
-        )
+        return _json({"ok": True, "message": "NapCat 已重启"})
 
 
 @driver.on_startup
