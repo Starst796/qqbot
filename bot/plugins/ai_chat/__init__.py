@@ -646,11 +646,45 @@ _SENTENCE_END = "。！？!?…"
 # 得让模型自己别主动断行（用户的人设里往往写着“一行一句”，这里明确覆盖它）。
 _FORMAT_HINT = (
     "\n\n【输出格式（以此为准，覆盖前面任何相反的格式要求）】\n"
-    "- 默认**一条消息说完**。绝大多数回复就该是单独一条，不要为了“像连打几条”而主动断行。\n"
+    "- 默认**一条消息说完**，一两句就够。绝大多数回复就该是单独一条，"
+    "不要为了“像连打几条”而主动断行。\n"
     "- 只有确实想把话分两口气说、或内容明显是两件不相干的事时，才换行分成两条（最多两条）。\n"
-    "- 不要空行，不要用「-」「1.」这类列表符号，不要 markdown，"
+    "- **换行就直接挨着换行，绝不要空行。** 空行看起来像在写作文分段，"
+    "完全不像群里随手打字；两句之间空一行是最出戏的写法。\n"
+    "- 不要用「-」「1.」这类列表符号，不要 markdown，"
     "也不要在句尾写「(1/2)」这种续行提示。"
 )
+
+
+def _is_cjk(ch: str) -> bool:
+    """是不是中日韩文字/全角标点（用于决定压平换行时要不要补空格）。"""
+    code = ord(ch)
+    return (
+        0x3000 <= code <= 0x303F          # CJK 标点
+        or 0x3400 <= code <= 0x4DBF       # 扩展 A
+        or 0x4E00 <= code <= 0x9FFF       # 常用汉字
+        or 0xFF00 <= code <= 0xFFEF       # 全角
+    )
+
+
+def _flatten(text: str) -> str:
+    """把多行压成一行：中文之间直接拼，拉丁文/数字之间补一个空格。
+
+    为什么必须有它：短回复走“不拆条”兜底时，如果原文带着换行（尤其是空行），
+    直接发出去就是**一个气泡里带空行** —— 比拆成两条更不像人。
+    模型很爱在两句话之间空一行（即使提示词里写了“不要空行”），所以这层
+    代码兜底是必需的。
+    """
+    parts = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not parts:
+        return ""
+    out = parts[0]
+    for part in parts[1:]:
+        if _is_cjk(out[-1]) and _is_cjk(part[0]):
+            out += part
+        else:
+            out += " " + part
+    return out
 
 
 def _split_reply(text: str, cfg: dict) -> list[str]:
@@ -658,9 +692,11 @@ def _split_reply(text: str, cfg: dict) -> list[str]:
 
     规则（按顺序）：
 
-    1. **短回复绝不拆**：整段短于 `single_message_chars` 就直接一条。
+    1. **短回复绝不拆**：整段短于 `single_message_chars` 就压成一条。
        真人不会把一句短话分两条发 —— 这是“每条回复都变好几条”的主要解药，
        而且它只依赖代码，不受提示词怎么写影响。
+       ⚠️ 压条时**必须把换行一起压平**（`_flatten`）：模型很爱在两句话之间
+       空一行，原样发出去就是一个气泡里带空行 —— 比拆成两条更不像人。
     2. 按行拆（`split_lines`）；模型偶尔写成整段（没有换行）时按句末标点切开，
        避免在 QQ 里糊成一大坨；实在没有标点才硬切。
     3. **碎渣并回**：拆出来的片段短于 `min_chunk_chars` 就并到相邻片段，
@@ -672,12 +708,13 @@ def _split_reply(text: str, cfg: dict) -> list[str]:
     if not text:
         return []
     if not cfg.get("split_long", True):
-        return [text]
+        # “整条一次发出”也该是一个干净的单条，不能把空行原样塞进去
+        return [_flatten(text)]
 
-    # 1. 短回复不拆
+    # 1. 短回复不拆（并压平换行）
     floor = max(0, int(cfg.get("single_message_chars", 30) or 0))
     if floor and len(text) <= floor:
-        return [text]
+        return [_flatten(text)]
 
     # 2. 按行 / 按句末标点拆
     limit = max(20, int(cfg.get("split_at", 350) or 350))
