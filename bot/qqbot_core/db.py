@@ -583,6 +583,18 @@ def clear_sessions(
 # --------------------------------------------------------------------------- #
 # 批量导入（历史聊天记录导入用）
 # --------------------------------------------------------------------------- #
+def groups_of_user(user_id: str) -> list[str]:
+    """某用户发过言的群号列表（用于清理其派生数据）。"""
+    conn = connect()
+    with _lock:
+        rows = conn.execute(
+            "SELECT DISTINCT group_id FROM messages "
+            "WHERE user_id = ? AND group_id IS NOT NULL",
+            (user_id,),
+        )
+        return [str(r["group_id"]) for r in rows]
+
+
 def message_keys(group_id: str) -> set[tuple[str, str, int]]:
     """某群已有消息的 (user_id, content, 秒级 ts) 集合，供导入去重。"""
     conn = connect()

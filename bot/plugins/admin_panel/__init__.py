@@ -349,13 +349,26 @@ def _register(app) -> None:
             else None
         )
 
+        # 先记下受影响的范围：复读学习表与接话对都是从消息派生出来的
+        if group_id:
+            affected: list[str] | None = [group_id]
+        elif user_id:
+            affected = db.groups_of_user(user_id)
+        else:
+            affected = None  # None = 全部
+
         deleted = cleared = 0
         if scope in ("messages", "both"):
             deleted = db.delete_messages(group_id=group_id, user_id=user_id, ids=ids)
-            # 复读学习表与接话对都是从这些消息派生出来的，一起清掉免得留下脏数据
-            if not ids and not user_id:
-                db.clear_repeat_learn(group_id)
-                db.clear_style_pairs(group_id)
+            # 按单条 id 删除时不碰整群的派生数据；其余情况同步清理，免得留下脏数据
+            if not ids:
+                if affected is None:
+                    db.clear_repeat_learn(None)
+                    db.clear_style_pairs(None)
+                else:
+                    for gid in affected:
+                        db.clear_repeat_learn(gid)
+                        db.clear_style_pairs(gid)
         if scope in ("sessions", "both"):
             cleared = db.clear_sessions(group_id=group_id, user_id=user_id)
         try:
