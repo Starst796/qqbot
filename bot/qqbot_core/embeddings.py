@@ -13,6 +13,22 @@ from typing import Any
 
 import numpy as np
 
+# 单条文本送入模型前最多保留的字符数。
+# 聊天短句平均只有几十字，留 512 字足够覆盖绝大多数消息。
+MAX_CHARS = 512
+
+# 模型 tokenizer 的截断上限。
+# bge-m3 默认 8192，但一个 batch 会被 padding 到「批内最长那条」的长度；
+# 只要混进一条几百字的导入长消息，整批 64 条就要按几千 token 算，
+# CPU 上单批能拖到好几分钟（实测卡在 encode 里 270% CPU 却几乎不产出）。
+# 限制到 256 后，短句批次的耗时可忽略不计。
+MAX_SEQ_LENGTH = 256
+
+
+def _clip(text: str) -> str:
+    text = (text or "").strip()
+    return text[:MAX_CHARS] if len(text) > MAX_CHARS else text
+
 
 class Embedder:
     def __init__(self, model_name: str) -> None:
@@ -33,6 +49,8 @@ class Embedder:
                 from sentence_transformers import SentenceTransformer  # type: ignore
 
                 self._model = SentenceTransformer(self.model_name, device="cpu")
+                # 必须在编码前收紧，否则超长消息会把整批 padding 撑爆
+                self._model.max_seq_length = MAX_SEQ_LENGTH
             except Exception as exc:  # noqa: BLE001 —— 任何失败都降级
                 self._model = None
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -51,17 +69,27 @@ class Embedder:
         return int(self._model.get_sentence_embedding_dimension())
 
     def encode(self, texts: list[str]) -> np.ndarray:
-        """返回 L2 归一化后的 float32 矩阵，形状 (n, dim)。"""
+        """返回 L2 归一化后的 float32 矩阵，形状 (n, dim)，顺序与入参一致。"""
         self._ensure_loaded()
         if self._model is None or not texts:
             return np.zeros((0, self.dim or 0), dtype=np.float32)
+
+        # 先按长度排序再编码，让批内 padding 尽可能小；编码后还原原顺序。
+        order = sorted(range(len(texts)), key=lambda i: len(texts[i] or ""))
+        ordered = [_clip(texts[i]) for i in order]
+
         vecs = self._model.encode(
-            texts,
+            ordered,
             normalize_embeddings=True,
             convert_to_numpy=True,
             show_progress_bar=False,
         )
-        return np.asarray(vecs, dtype=np.float32)
+        vecs = np.asarray(vecs, dtype=np.float32)
+
+        out = np.empty_like(vecs)
+        for pos, idx in enumerate(order):
+            out[idx] = vecs[pos]
+        return out
 
 
 _singleton: Embedder | None = None

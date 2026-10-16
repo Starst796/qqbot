@@ -92,7 +92,12 @@ async def _embed_loop() -> None:
     """后台向量化：**有活就连续干，没活才按 embed_interval_sec 轮询**。
 
     历史记录导入后可能有几万条待处理，若每批都固定 sleep 会拖到好几小时。
+
+    每 10 批打一条 INFO 日志（累计条数 + 平均速率），否则「有没有在长」全靠猜。
     """
+    total = 0
+    batches = 0
+    t0 = time.time()
     while True:
         try:
             done = await _process_pending()
@@ -102,8 +107,24 @@ async def _embed_loop() -> None:
             logger.warning(f"rag 后台向量化出错：{type(exc).__name__}: {exc}")
             done = 0
         if done:
+            total += done
+            batches += 1
+            if batches % 10 == 0:
+                elapsed = max(1e-6, time.time() - t0)
+                logger.info(
+                    f"rag: 向量补全累计 {total} 条 / {batches} 批，"
+                    f"平均 {total / elapsed:.1f} 条/秒"
+                )
             await asyncio.sleep(0.2)
             continue
+        if total:
+            logger.info(
+                f"rag: 向量补全本轮跑完，共 {total} 条 / {batches} 批，"
+                f"用时 {time.time() - t0:.0f}s"
+            )
+            total = 0
+            batches = 0
+            t0 = time.time()
         interval = int((config.get("retrieval", {}) or {}).get("embed_interval_sec", 20))
         await asyncio.sleep(max(5, interval))
 
