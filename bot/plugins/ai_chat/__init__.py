@@ -12,7 +12,7 @@
 限流：四维——每群最小间隔、每群每分钟上限、每用户冷却、全局并发上限；
       超限一律静默丢弃，避免刷屏与烧额度。默认值来自 config.json，可在管理面板在线调整。
       「每群每分钟上限」才是话痨度的直接旋钮（最小间隔只防连发）。
-拟人：随机打字延迟 + 长回复分段。
+拟人：随机打字延迟 + 长回复分段（每条之间的间隔可调，见 `humanize.chunk_gap_ms_*`）。
 """
 
 from __future__ import annotations
@@ -676,7 +676,24 @@ def _split_reply(text: str, cfg: dict) -> list[str]:
     return chunks or [text]
 
 
+def _chunk_gap_range(human: dict) -> tuple[float, float]:
+    """分条之间的随机间隔（返回秒）。
+
+    两端都设 0 = 连发；上下限写反了自动交换；负数/非数值一律被 `_clamp_number`
+    兜回默认 —— 面板的 `<input type=number>` 拦不住手输的怪值。
+    """
+    low = _clamp_number(human.get("chunk_gap_ms_min", 300), 300.0, 0.0, 60000.0) / 1000.0
+    high = _clamp_number(human.get("chunk_gap_ms_max", 900), 900.0, 0.0, 60000.0) / 1000.0
+    low, high = max(0.0, low), max(0.0, high)
+    return (low, high) if low <= high else (high, low)
+
+
 async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
+    """发出回复。
+
+    两种延迟：首条之前等 `min_delay_ms`~`max_delay_ms`（**只等一次**），
+    之后每条之间等 `chunk_gap_ms_min`~`chunk_gap_ms_max`。
+    """
     human = config.get("humanize", {}) or {}
     delay = random.uniform(
         float(human.get("min_delay_ms", 800)) / 1000.0,
@@ -685,15 +702,14 @@ async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
     await asyncio.sleep(delay)
 
     chunks = _split_reply(text, human)
+    gap_low, gap_high = _chunk_gap_range(human)
 
     group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
     activity.mark_spoken(group_id)  # 让 repeater 在这之后一小段时间内让路
     for i, chunk in enumerate(chunks):
-        if i == 0:
-            await matcher.send(chunk)
-        else:
-            await asyncio.sleep(random.uniform(0.3, 0.9))
-            await matcher.send(chunk)
+        if i:
+            await asyncio.sleep(random.uniform(gap_low, gap_high))
+        await matcher.send(chunk)
 
 
 @matcher.handle()
@@ -755,6 +771,10 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         recorded = " ".join(part for part in (question, placeholders(event.message)) if part)
         db.add_session(_conv_key(event), "user", f"{_display_name(event)}: {recorded}")
         db.add_session(_conv_key(event), "assistant", answer)
-        await _reply(bot, event, answer)
     finally:
+        # 名额只统计「准备 + 调模型」。下面那段发送（拟人化延迟 + 分条间隔，可能好几秒）
+        # 不该占着并发闸 —— 否则同时 3 个人问到长回复，第 4 个会被丢掉，
+        # 而其实模型早就答完了，只是在慢慢发消息。
         await _limiter.release()
+
+    await _reply(bot, event, answer)
