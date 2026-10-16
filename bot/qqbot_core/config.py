@@ -64,6 +64,18 @@ DEFAULTS: dict[str, Any] = {
         "default_enabled": True,  # 没在 enabled 里单独写的群是否响应
         "enabled": {},            # 群号 -> bool，由面板的每群开关写入
     },
+    # ---- NapCat / QQ 登录（面板读二维码与 WebUI token 用）----
+    "napcat": {
+        # docker：默认走仓库里的容器编排（bind mount 到 <仓库>/napcat/data/...）
+        # native：不走 Docker，直跑 NapCat（Windows 离线测试常用）
+        "mode": "docker",
+        # NapCat 数据目录（下面固定有 config/ cache/ logs/ 三个子目录）。
+        # 留空 = <仓库>/napcat/data；native 模式指向 NapCat 安装目录即可。
+        "dir": "",
+        "webui_base": "http://127.0.0.1:6099",
+        # 仅 docker 模式使用：容器名
+        "container": "qqbot-napcat",
+    },
     # ---- 限流（默认值，可在面板调整）----
     "rate_limit": {
         "per_group_seconds": 30,   # 同一群两次回复最小间隔

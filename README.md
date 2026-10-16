@@ -242,8 +242,18 @@ curl -su admin https://qq.example.com/  # 面板可达
 但**`deploy/` 里的 systemd / nginx / sudoers 模板在 Windows 上用不了**，所以这是一条
 和上面完全不同的路径 —— 代价是**没有开机自启，也没有 BasicAuth 鉴权**。
 
-1. 装 **Docker Desktop**（WSL2 后端）和 Python 3.10~3.12。
-2. 起 NapCat：
+1. 装 **Python 3.10~3.12**；NapCat 二选一：
+
+   **方案 A（推荐）：原生 NapCat，不用 Docker**
+
+   装 QQ NT + 用 NapCat.Shell 启动（见 NapCat 官方发行包）。它同样监听
+   `6099`（WebUI）和 `3001`（OneBot 正向 WS），所以 `bot/.env` **一字不用改**，
+   也绕开了 WSL2 的 bind-mount 权限坑。然后在面板「群与数据 → NapCat 接入」把
+   接入方式改成 `native`、数据目录指向 NapCat 安装目录即可。
+   注意：原生版依赖你本机装的 QQ，**QQ 客户端升级可能打断 NapCat 注入**，需等 NapCat 跟进；
+   想要版本可控就用方案 B。
+
+   **方案 B：Docker Desktop（WSL2 后端）**
 
    ```powershell
    cd napcat
@@ -253,7 +263,9 @@ curl -su admin https://qq.example.com/  # 面板可达
    docker compose up -d
    ```
 
-3. 起机器人：
+   Docker 版自带 QQ，QQ 与 NapCat 的版本匹配由镜像维护，升级更省心。
+
+2. 起机器人（注意先 `cd` 进去，NoneBot 的工作目录很关键）：
 
    ```powershell
    cd bot
@@ -264,18 +276,21 @@ curl -su admin https://qq.example.com/  # 面板可达
    ..\venv\Scripts\python bot.py
    ```
 
-4. 开机自启：用「任务计划程序」或 [NSSM](https://nssm.cc/) 把 `bot.py` 注册成服务。
+3. 开机自启：用「任务计划程序」或 [NSSM](https://nssm.cc/) 把 `bot.py` 注册成服务。
 
 > **面板绝对不要暴露到公网。** BasicAuth 是 nginx 那层做的，Windows 上通常没有 nginx，
 > 面板（`127.0.0.1:8081`）就是**零鉴权**的。只在本机访问，或自己在前面套一层带鉴权的反代。
 
 Windows 上还会遇到的：
 
+- **完全离线也能跑**：把面板里的 `retrieval.embed_model` 改成**本地模型目录**
+  （比如 `D:\models\bge-m3`）就不需要联网下载；不想要语义检索就直接关掉 `retrieval.enabled`，
+  会自动降级为 FTS5 关键词检索。
 - **「重启服务」按钮不生效**：它靠 systemd 拉起，Windows 上没有兜底，
   所以服务端会直接返回 501 并提示你手动重启（不会把进程弄死）。
+- **「重启 NapCat」按钮在 native 模式下不可用**：没有容器可重启，需要手动结束并重开 NapCat 进程。
 - **`HF_HOME` 建议显式设一下**，否则 2.3 GB 的 embedding 模型会落到
-  `%USERPROFILE%\.cache\huggingface`；想换 `BAAI/bge-small-zh-v1.5` 也是改面板里的
-  `retrieval.embed_model` 后重启。
+  `%USERPROFILE%\.cache\huggingface`。
 - **GPU 加速**要装对应 CUDA 版本的 torch wheel，50 系卡必须 `cu128`：
   `pip install torch --index-url https://download.pytorch.org/whl/cu128`。
   然后可以用 `deploy/local_embed.py` 在本机批量算向量（见上文「离线批量算向量」）。

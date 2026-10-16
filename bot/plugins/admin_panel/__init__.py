@@ -62,19 +62,57 @@ def _schedule_restart(delay: float = 1.0) -> bool:
 
 # ---------------------------------------------------------------------------
 # NapCat / QQ 登录管理
-#   容器把运行缓存挂到了 <repo>/napcat/data/cache，因此宿主可直接读到二维码。
+#
+# 默认按仓库里的 Docker 编排取路径：容器把 NapCat 的 config/ cache/ logs/
+# 挂到了 <仓库>/napcat/data/ 下面，所以宿主能直接读到二维码与 WebUI token。
+#
+# Windows 上直接跑原生 NapCat（NapCat.Shell）时不需要 Docker，而 NapCat 自身
+# 用的也是 config/ cache/ logs/ 这三个子目录 —— 把 config.json 里的
+# `napcat.mode` 改成 native、`napcat.dir` 指向 NapCat 安装目录即可，
+# 机器人本体（OneBot 连接）本来就不依赖 Docker。
 # ---------------------------------------------------------------------------
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_QR_PATH = _REPO_ROOT / "napcat" / "data" / "cache" / "qrcode.png"
-_WEBUI_CONF = _REPO_ROOT / "napcat" / "data" / "config" / "webui.json"
-_WEBUI_BASE = "http://127.0.0.1:6099"
-_QQ_CONTAINER = "qqbot-napcat"
+_DEFAULT_NAPCAT_DIR = _REPO_ROOT / "napcat" / "data"
+
+
+def _napcat_cfg() -> dict:
+    return config.get("napcat", {}) or {}
+
+
+def _napcat_mode() -> str:
+    """`docker`（默认，走仓库里的容器编排）或 `native`（直跑 NapCat）。"""
+    return str(_napcat_cfg().get("mode") or "docker").strip().lower()
+
+
+def _napcat_dir() -> Path:
+    """NapCat 数据目录（下面固定有 config/ cache/ logs/ 三个子目录）。
+
+    留空则用仓库内的 docker bind mount 路径，因此**默认行为与以前完全一致**。
+    """
+    raw = str(_napcat_cfg().get("dir") or "").strip()
+    return Path(raw).expanduser() if raw else _DEFAULT_NAPCAT_DIR
+
+
+def _qr_path() -> Path:
+    return _napcat_dir() / "cache" / "qrcode.png"
+
+
+def _webui_conf_path() -> Path:
+    return _napcat_dir() / "config" / "webui.json"
+
+
+def _webui_base() -> str:
+    return str(_napcat_cfg().get("webui_base") or "http://127.0.0.1:6099").rstrip("/")
+
+
+def _qq_container() -> str:
+    return str(_napcat_cfg().get("container") or "qqbot-napcat")
 
 
 def _webui_token() -> str:
     """从 NapCat 持久化的 webui.json 读 WebUI token（无需 docker）。"""
     try:
-        data = json.loads(_WEBUI_CONF.read_text(encoding="utf-8"))
+        data = json.loads(_webui_conf_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
 
@@ -123,13 +161,13 @@ async def _napcat_webui(path: str, payload: dict | None = None, timeout: float =
         return {"code": -1, "message": "读取 NapCat WebUI token 失败（webui.json）"}
     digest = hashlib.sha256((token + ".napcat").encode()).hexdigest()
     login = await _http_json(
-        f"{_WEBUI_BASE}/api/auth/login", {"hash": digest, "totpCode": ""}, timeout
+        f"{_webui_base()}/api/auth/login", {"hash": digest, "totpCode": ""}, timeout
     )
     cred = (login.get("data") or {}).get("Credential") if isinstance(login, dict) else None
     if not cred:
         return {"code": -1, "message": f"登录 NapCat WebUI 失败：{login}"}
     return await _http_json(
-        f"{_WEBUI_BASE}/api{path}",
+        f"{_webui_base()}/api{path}",
         payload or {},
         timeout,
         headers={"Authorization": f"Bearer {cred}"},
@@ -137,7 +175,13 @@ async def _napcat_webui(path: str, payload: dict | None = None, timeout: float =
 
 
 async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str]:
-    """执行 docker 子进程；需要服务用户（ubuntu）在 docker 组内。"""
+    """执行 docker 子进程；需要服务用户（ubuntu）在 docker 组内。
+
+    `napcat.mode=native`（不走 Docker 跑原生 NapCat）时直接返回错误，
+    免得面板每轮状态轮询都白起一个进程。
+    """
+    if _napcat_mode() != "docker":
+        return 127, "native 模式（未使用 Docker），该操作不可用"
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -170,6 +214,27 @@ def _clean_napcat_log(text: str) -> list[str]:
             continue
         keep.append(line)
     return keep[-10:]
+
+
+def _native_logs() -> list[str]:
+    """原生模式没有 docker logs，直接读 NapCat 自己的日志目录（取最新的那个文件）。"""
+    log_dir = _napcat_dir() / "logs"
+    try:
+        files = sorted(
+            (p for p in log_dir.iterdir() if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return []
+    for path in files[:1]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # 只取尾部：日志文件可能很大，没必要整个读进来
+        return _clean_napcat_log("\n".join(text.splitlines()[-400:]))
+    return []
 
 
 async def _joined_groups() -> list[dict[str, str]]:
@@ -432,21 +497,37 @@ def _register(app) -> None:
             bots = []
 
         qr_info = None
-        if _QR_PATH.exists():
-            st = _QR_PATH.stat()
+        qr_file = _qr_path()
+        if qr_file.exists():
+            st = qr_file.stat()
             qr_info = {"mtime": st.st_mtime, "size": st.st_size}
 
+        if _napcat_mode() != "docker":
+            # 原生模式（如 Windows 直跑 NapCat）：没有容器，改读 NapCat 自己的日志目录
+            return _json(
+                {
+                    "ok": True,
+                    "online": bool(bots),
+                    "bots": bots,
+                    "mode": "native",
+                    "container": "原生模式（未使用 Docker）",
+                    "qr": qr_info,
+                    "log": _native_logs(),
+                }
+            )
+
         rc_state, state = await _docker(
-            "inspect", "-f", "{{.State.Status}}", _QQ_CONTAINER, timeout=20
+            "inspect", "-f", "{{.State.Status}}", _qq_container(), timeout=20
         )
         rc_log, logs = await _docker(
-            "logs", "--tail", "60", _QQ_CONTAINER, timeout=20
+            "logs", "--tail", "60", _qq_container(), timeout=20
         )
         return _json(
             {
                 "ok": True,
                 "online": bool(bots),
                 "bots": bots,
+                "mode": "docker",
                 "container": state.strip() if rc_state == 0 else "unknown",
                 "qr": qr_info,
                 "log": _clean_napcat_log(logs) if rc_log == 0 else [],
@@ -456,10 +537,10 @@ def _register(app) -> None:
     @app.get("/api/napcat/qr")
     async def _napcat_qr():
         """把容器里的登录二维码原样吐给浏览器（no-store，Always 取最新的）。"""
-        if not _QR_PATH.exists():
+        if not _qr_path().exists():
             return _json({"ok": False, "error": "暂无二维码文件"}, status=404)
         try:
-            data = _QR_PATH.read_bytes()
+            data = _qr_path().read_bytes()
         except OSError as exc:
             return _json({"ok": False, "error": str(exc)}, status=500)
         return Response(
@@ -485,8 +566,16 @@ def _register(app) -> None:
 
     @app.post("/api/napcat/restart")
     async def _napcat_restart():
-        """重启 NapCat 容器（兜底手段，会中断连接）。"""
-        rc, out = await _docker("restart", _QQ_CONTAINER, timeout=120)
+        """重启 NapCat 容器（兜底手段，会中断连接）。原生模式不支持。"""
+        if _napcat_mode() != "docker":
+            return _json(
+                {
+                    "ok": False,
+                    "error": "原生模式（未使用 Docker）无法从这里重启，请手动重启 NapCat 进程",
+                },
+                status=501,
+            )
+        rc, out = await _docker("restart", _qq_container(), timeout=120)
         logger.info(f"admin_panel: 重启 NapCat 容器 rc={rc}")
         if rc != 0:
             return _json({"ok": False, "error": out.strip()[:500]}, status=500)

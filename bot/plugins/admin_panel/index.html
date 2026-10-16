@@ -233,6 +233,22 @@
   </section>
 
   <section class="card" data-page="data">
+    <h2>NapCat 接入</h2>
+    <div class="row"><label>接入方式</label>
+      <select id="napcat.mode">
+        <option value="docker">docker —— 走仓库里的容器编排（默认）</option>
+        <option value="native">native —— 不走 Docker，直跑原生 NapCat</option>
+      </select>
+    </div>
+    <div class="row"><label>NapCat 数据目录</label><input type="text" id="napcat.dir" placeholder="留空 = 仓库/napcat/data" /></div>
+    <div class="row"><label>WebUI 地址</label><input type="text" id="napcat.webui_base" /></div>
+    <div class="row"><label>容器名（仅 docker）</label><input type="text" id="napcat.container" /></div>
+    <p class="hint">native 模式下面板不再调 Docker：二维码与 WebUI token 从上面的目录读
+      （NapCat 自身也用 config/ cache/ logs/ 三个子目录），日志改读该目录下的 logs/；
+      「重启 NapCat」按钮会置灰，需手动重启进程。机器人本体（OneBot 连接）两种模式都一样。</p>
+  </section>
+
+  <section class="card" data-page="data">
     <h2>群功能开关与数据管理</h2>
     <div class="row"><label>未单独设置的群默认响应</label><input type="checkbox" id="groups.default_enabled" /></div>
     <div class="actions-inline">
@@ -759,6 +775,10 @@ async function loadNapcat() {
     const r = await fetch("/api/napcat/status");
     const d = await r.json();
     const st = $("qqState");
+    // native 模式（不走 Docker）下重启容器没意义，干脆置灰
+    const native = d.mode === "native";
+    $("btnNapcatRestart").disabled = native;
+    $("btnNapcatRestart").title = native ? "原生模式下请手动重启 NapCat 进程" : "";
     if (d.online) {
       st.textContent = `在线 · QQ ${d.bots.join(" / ")} · 容器 ${d.container}`;
       st.style.color = "var(--ok)";
