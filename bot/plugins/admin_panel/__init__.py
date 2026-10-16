@@ -23,7 +23,7 @@ from typing import Any
 # 必须在模块顶层导入：FastAPI 用 get_type_hints() 在「模块全局作用域」解析注解，
 # 若在函数内部才 import，注解里的 Request/HTMLResponse 会解析失败，
 # 导致 request 被当成查询参数 → POST 一律 422。
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from nonebot import get_bots, get_driver, logger
 
@@ -45,6 +45,47 @@ def _schedule_restart(delay: float = 1.0) -> None:
     """
     loop = asyncio.get_event_loop()
     loop.call_later(delay, lambda: os.kill(os.getpid(), signal.SIGTERM))
+
+
+# ---------------------------------------------------------------------------
+# NapCat / QQ 登录管理
+#   容器把运行缓存挂到了 <repo>/napcat/data/cache，因此宿主可直接读到二维码。
+# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_QR_PATH = _REPO_ROOT / "napcat" / "data" / "cache" / "qrcode.png"
+_QQ_CONTAINER = "qqbot-napcat"
+
+
+async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str]:
+    """执行 docker 子进程；需要服务用户（ubuntu）在 docker 组内。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except (FileNotFoundError, PermissionError) as exc:
+        return 127, f"无法执行 docker：{exc}"
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 124, "docker 命令超时"
+    return proc.returncode or 0, (out or b"").decode("utf-8", "replace")
+
+
+def _clean_napcat_log(text: str) -> list[str]:
+    """滤掉二维码字符画与 MMKV 噪声，只留可读行。"""
+    keep: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("[I] "):
+            continue
+        if any(ch in line for ch in "█▄▀▐▌") or len(line) > 200:
+            continue
+        keep.append(line)
+    return keep[-10:]
 
 
 async def _joined_groups() -> list[dict[str, str]]:
@@ -262,6 +303,61 @@ def _register(app) -> None:
         )
         return _json(
             {"ok": True, "deleted_messages": deleted, "cleared_sessions": cleared}
+        )
+    # ---- QQ / NapCat 登录状态与管理 ----
+    @app.get("/api/napcat/status")
+    async def _napcat_status():
+        try:
+            bots = [str(key) for key in get_bots().keys()]
+        except Exception:  # noqa: BLE001
+            bots = []
+
+        qr_info = None
+        if _QR_PATH.exists():
+            st = _QR_PATH.stat()
+            qr_info = {"mtime": st.st_mtime, "size": st.st_size}
+
+        rc_state, state = await _docker(
+            "inspect", "-f", "{{.State.Status}}", _QQ_CONTAINER, timeout=20
+        )
+        rc_log, logs = await _docker(
+            "logs", "--tail", "60", _QQ_CONTAINER, timeout=20
+        )
+        return _json(
+            {
+                "ok": True,
+                "online": bool(bots),
+                "bots": bots,
+                "container": state.strip() if rc_state == 0 else "unknown",
+                "qr": qr_info,
+                "log": _clean_napcat_log(logs) if rc_log == 0 else [],
+            }
+        )
+
+    @app.get("/api/napcat/qr")
+    async def _napcat_qr():
+        """把容器里的登录二维码原样吐给浏览器（no-store，Always 取最新的）。"""
+        if not _QR_PATH.exists():
+            return _json({"ok": False, "error": "暂无二维码文件"}, status=404)
+        try:
+            data = _QR_PATH.read_bytes()
+        except OSError as exc:
+            return _json({"ok": False, "error": str(exc)}, status=500)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.post("/api/napcat/relogin")
+    async def _napcat_relogin():
+        """重启 NapCat 容器，逼它重新生成登录二维码。"""
+        rc, out = await _docker("restart", _QQ_CONTAINER, timeout=120)
+        logger.info(f"admin_panel: 重启 NapCat 容器 rc={rc}")
+        if rc != 0:
+            return _json({"ok": False, "error": out.strip()[:500]}, status=500)
+        return _json(
+            {"ok": True, "message": "NapCat 已重启，二维码生成中（约 10~20 秒）"}
         )
 
 

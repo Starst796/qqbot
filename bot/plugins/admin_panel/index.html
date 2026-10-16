@@ -42,6 +42,8 @@
   .msg .who { color:var(--acc); white-space:nowrap; }
   .msg .txt { flex:1; word-break:break-all; }
   .msg .t { color:var(--mut); white-space:nowrap; font-size:12px; }
+  .logbox { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:10px; max-height:170px; overflow:auto; font-size:12px; color:var(--mut); white-space:pre-wrap; word-break:break-all; margin:12px 0 0; }
+  #qrImg { width:200px; height:200px; background:#fff; border-radius:8px; padding:6px; display:block; }
 </style>
 </head>
 <body>
@@ -53,6 +55,21 @@
   <section class="card">
     <h2>运行统计</h2>
     <div class="stats" id="stats">—</div>
+  </section>
+
+  <section class="card">
+    <h2>QQ 登录状态</h2>
+    <div class="actions-inline">
+      <span class="hint2" id="qqState" style="margin:0">检查中…</span>
+      <button class="ghost" id="btnQr">刷新二维码</button>
+      <button class="ghost danger" id="btnRelogin">重新登录（重启 NapCat）</button>
+    </div>
+    <div id="qrBox" style="display:none;margin-top:14px">
+      <img id="qrImg" alt="登录二维码" />
+      <p class="hint2">用<b>已登录该 QQ 小号的手机</b>扫码授权。二维码约 1~2 分钟过期，失效就点「刷新二维码」；
+        无二维码时点「重新登录」让 NapCat 重新生成。</p>
+    </div>
+    <pre class="logbox" id="napcatLog">—</pre>
   </section>
 
   <section class="card">
@@ -589,6 +606,68 @@ $("pairsList").addEventListener("click", async (ev) => {
 
 loadGroups();
 refreshDistill();
+
+// ---------------- QQ / NapCat 登录状态 ----------------
+let lastQrMtime = 0;
+
+async function loadNapcat() {
+  try {
+    const r = await fetch("/api/napcat/status");
+    const d = await r.json();
+    const st = $("qqState");
+    if (d.online) {
+      st.textContent = `在线 · QQ ${d.bots.join(" / ")} · 容器 ${d.container}`;
+      st.style.color = "var(--ok)";
+      $("qrBox").style.display = "none";
+      lastQrMtime = 0;
+    } else {
+      st.textContent = d.qr
+        ? `离线 · 容器 ${d.container} · 二维码更新于 ${fmtTime(d.qr.mtime)}`
+        : `离线 · 容器 ${d.container} · 暂无二维码（点「重新登录」生成）`;
+      st.style.color = "#f85149";
+      if (d.qr) {
+        $("qrBox").style.display = "block";
+        if (d.qr.mtime !== lastQrMtime) {
+          lastQrMtime = d.qr.mtime;
+          $("qrImg").src = "/api/napcat/qr?t=" + Math.round(d.qr.mtime);
+        }
+      }
+    }
+    $("napcatLog").textContent = (d.log || []).join("\n") || "（无日志）";
+  } catch (e) {
+    $("qqState").textContent = "状态获取失败：" + e.message;
+  }
+}
+
+$("btnQr").onclick = async () => {
+  lastQrMtime = 0;
+  await loadNapcat();
+  toast("已刷新");
+};
+
+$("btnRelogin").onclick = async () => {
+  if (!confirm("重启 NapCat 容器以生成新的登录二维码？\n（会断开与 QQ 的连接，需要重新扫码）")) return;
+  $("qqState").textContent = "正在重启 NapCat…";
+  $("qqState").style.color = "var(--warn)";
+  try {
+    const r = await fetch("/api/napcat/relogin", { method: "POST" });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "重启失败");
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  toast("NapCat 已重启，等待二维码…");
+  lastQrMtime = 0;
+  let tries = 0;
+  const tick = setInterval(async () => {
+    tries++;
+    await loadNapcat();
+    if (tries >= 15) clearInterval(tick);
+  }, 4000);
+};
+
+loadNapcat();
+setInterval(loadNapcat, 15000);
 </script>
 </body>
 </html>

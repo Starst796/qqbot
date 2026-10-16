@@ -36,3 +36,5 @@ services:
       - ./data/QQ:/app/.config/QQ
       # NapCat 日志（便于排查）
       - ./data/logs:/app/napcat/logs
+      # 运行缓存（含登录二维码 qrcode.png）——挂出来供管理面板读取/展示
+      - ./data/cache:/app/napcat/cache
