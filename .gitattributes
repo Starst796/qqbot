@@ -1,0 +1,11 @@
+# 统一换行符：一律用 LF。
+# 部署脚本（*.sh / *.template）如果在 Windows 上被检出成 CRLF，
+# 传到 Linux 执行会报 `bad interpreter: /usr/bin/env bash^M`。
+* text=auto eol=lf
+
+# 二进制，别做换行符转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary
+*.npz binary
