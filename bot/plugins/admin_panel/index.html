@@ -642,22 +642,25 @@ $("btnPairs").onclick = () => {
 // 接话对分页浏览：每页 PAIRS_LIMIT 条，用「◀ 上一页 / 下一页 ▶」翻页
 const PAIRS_LIMIT = 50;
 let pairsState = { group_id: "", offset: 0, total: 0 };
+let pairsToken = 0; // 丢弃过期响应：连点「下一页」时以最后一次请求为准
 
 async function viewPairs(gid, offset) {
   const want = Math.max(0, Number(offset) || 0);
+  const token = ++pairsToken;
   const r = await fetch(
     `/api/style/pairs?group_id=${encodeURIComponent(gid)}` +
     `&limit=${PAIRS_LIMIT}&offset=${want}`
   );
   const d = await r.json();
+  if (token !== pairsToken) return; // 已经有更新的请求在跑，这次结果作废
   const list = d.pairs || [];
   const total = d.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / PAIRS_LIMIT));
 
-  // 删到本页空了就自动回退一页，不停在空白页
-  if (!list.length && want > 0) return viewPairs(gid, Math.max(0, want - PAIRS_LIMIT));
+  // 删到本页空了就跳到最后一个有效页（一次到位，不做逐页回退）
+  if (!list.length && want > 0) return viewPairs(gid, (pages - 1) * PAIRS_LIMIT);
 
   pairsState = { group_id: gid, offset: want, total };
-  const pages = Math.max(1, Math.ceil(total / PAIRS_LIMIT));
   const page = Math.floor(want / PAIRS_LIMIT) + 1;
   const to = want + list.length;
 
