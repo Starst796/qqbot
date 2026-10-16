@@ -261,14 +261,22 @@
     <h2>拟人化</h2>
     <div class="row"><label>最短打字延迟(ms)</label><input type="number" id="humanize.min_delay_ms" min="0" /></div>
     <div class="row"><label>最长打字延迟(ms)</label><input type="number" id="humanize.max_delay_ms" min="0" /></div>
+    <div class="row"><label>短回复不拆(字数)</label><input type="number" id="humanize.single_message_chars" min="0" /></div>
     <div class="row"><label>允许拆成多条消息</label><input type="checkbox" id="humanize.split_long" /></div>
     <div class="row"><label>按行拆条（一行一条）</label><input type="checkbox" id="humanize.split_lines" /></div>
+    <div class="row"><label>碎渣并回(字数)</label><input type="number" id="humanize.min_chunk_chars" min="0" /></div>
     <div class="row"><label>单条长度上限</label><input type="number" id="humanize.split_at" min="20" /></div>
     <div class="row"><label>一次最多几条</label><input type="number" id="humanize.max_chunks" min="1" /></div>
     <div class="row"><label>分条间隔下限(ms)</label><input type="number" id="humanize.chunk_gap_ms_min" min="0" /></div>
     <div class="row"><label>分条间隔上限(ms)</label><input type="number" id="humanize.chunk_gap_ms_max" min="0" /></div>
-    <p class="hint">提示词要求“一行一句”，这里按行拆成多条消息发送；模型偶尔写成整段时，
-      会按句末标点切开。「一次最多几条」是防刷屏上限，超出部分并入最后一条。<br />
+    <div class="row"><label>注入输出格式约束</label><input type="checkbox" id="humanize.style_hint" /></div>
+    <p class="hint"><strong>「短回复不拆」是最重要的一个旋钮</strong>：整段短于这个字数就绝不拆条，
+      直接一条发出（真人不会把一句短话分两条发）。默认 30，建议 20~40；设 0 = 关掉这个兜底。<br />
+      <strong>「注入输出格式约束」</strong>会在 system prompt 末尾追加一段“默认一条说完、最多两条”，
+      并<strong>明确覆盖人设里相反的格式要求</strong> —— 如果你的人设提示词里还写着“一行一句”，
+      这个开关就是让它不再生效的（默认开）。<br />
+      拆条规则：按行拆 → 片段短于「碎渣并回」就并到相邻片段 → 最多「一次最多几条」条，
+      超出并入最后一条；单条超过「长度上限」时按句末标点再切。<br />
       <strong>两种延迟别混淆</strong>：「最短/最长打字延迟」是<strong>首条之前</strong>等的（<strong>只等一次</strong>）；
       「分条间隔」是<strong>每条之间</strong>等的。想更连珠炮设 100/300，想更慢条斯理设 800/1500，
       设 0/0 就是连发。</p>

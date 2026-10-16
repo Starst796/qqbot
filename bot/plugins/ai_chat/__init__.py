@@ -12,7 +12,8 @@
 限流：四维——每群最小间隔、每群每分钟上限、每用户冷却、全局并发上限；
       超限一律静默丢弃，避免刷屏与烧额度。默认值来自 config.json，可在管理面板在线调整。
       「每群每分钟上限」才是话痨度的直接旋钮（最小间隔只防连发）。
-拟人：随机打字延迟 + 长回复分段（每条之间的间隔可调，见 `humanize.chunk_gap_ms_*`）。
+拟人：随机打字延迟 + 长回复分段；短回复靠 `humanize.single_message_chars` 兜底**绝不拆**，
+      分条间隔见 `humanize.chunk_gap_ms_*`，输出格式约束由 `humanize.style_hint` 统一注入。
 """
 
 from __future__ import annotations
@@ -619,6 +620,12 @@ async def _build_messages(
     if style_cfg.get("enabled", True) and isinstance(event, GroupMessageEvent):
         system += await _style_block(str(event.group_id), question, style_cfg)
 
+    # 输出格式约束放在最后（最显眼），且明确声明覆盖人设里的格式要求。
+    # 不写在这里而是运行时追加的原因：用户自定义的人设提示词往往写着“一行一句”，
+    # 而改 DEFAULTS 对已部署实例是无效的。
+    if (cfg.get("humanize", {}) or {}).get("style_hint", True):
+        system += _FORMAT_HINT
+
     messages: list[dict] = [{"role": "system", "content": system}]
     turns = int((cfg.get("style", {}) or {}).get("context_turns", 6))
     messages.extend(db.get_session(_conv_key(event), turns))
@@ -634,21 +641,45 @@ async def _build_messages(
 
 _SENTENCE_END = "。！？!?…"
 
+# 输出格式约束：**运行时统一追加**，不依赖人设提示词里写了什么。
+# 这是“每条回复都变好几条、不像真人”的另一半解法 —— 光靠代码不拆片段还不够，
+# 得让模型自己别主动断行（用户的人设里往往写着“一行一句”，这里明确覆盖它）。
+_FORMAT_HINT = (
+    "\n\n【输出格式（以此为准，覆盖前面任何相反的格式要求）】\n"
+    "- 默认**一条消息说完**。绝大多数回复就该是单独一条，不要为了“像连打几条”而主动断行。\n"
+    "- 只有确实想把话分两口气说、或内容明显是两件不相干的事时，才换行分成两条（最多两条）。\n"
+    "- 不要空行，不要用「-」「1.」这类列表符号，不要 markdown，"
+    "也不要在句尾写「(1/2)」这种续行提示。"
+)
+
 
 def _split_reply(text: str, cfg: dict) -> list[str]:
     """把回复拆成多条消息。
 
-    提示词要求"一行一句"，所以这里就按行拆——一行一条消息，等于替模型完成了
-    "分多条发送"。模型偶尔仍会写成整段（没有换行），此时按句末标点切开，
-    避免在 QQ 里糊成一大坨；实在没有标点才硬切。
+    规则（按顺序）：
 
-    `max_chunks` 是防刷屏上限：超出部分并进最后一条（宁可最后一条长一点，
-    也不要连发一串）。
+    1. **短回复绝不拆**：整段短于 `single_message_chars` 就直接一条。
+       真人不会把一句短话分两条发 —— 这是“每条回复都变好几条”的主要解药，
+       而且它只依赖代码，不受提示词怎么写影响。
+    2. 按行拆（`split_lines`）；模型偶尔写成整段（没有换行）时按句末标点切开，
+       避免在 QQ 里糊成一大坨；实在没有标点才硬切。
+    3. **碎渣并回**：拆出来的片段短于 `min_chunk_chars` 就并到相邻片段，
+       免得出现“确”/“实”这种被切碎的词。
+    4. `max_chunks` 是防刷屏上限：超出部分并进最后一条（宁可最后一条长一点，
+       也不要连发一串）。
     """
     text = (text or "").strip()
-    if not text or not cfg.get("split_long", True):
-        return [text] if text else []
+    if not text:
+        return []
+    if not cfg.get("split_long", True):
+        return [text]
 
+    # 1. 短回复不拆
+    floor = max(0, int(cfg.get("single_message_chars", 30) or 0))
+    if floor and len(text) <= floor:
+        return [text]
+
+    # 2. 按行 / 按句末标点拆
     limit = max(20, int(cfg.get("split_at", 350) or 350))
     if cfg.get("split_lines", True):
         pieces = [line.strip() for line in text.splitlines() if line.strip()]
@@ -670,7 +701,22 @@ def _split_reply(text: str, cfg: dict) -> list[str]:
         if piece:
             chunks.append(piece)
 
-    cap = max(1, int(cfg.get("max_chunks", 5) or 5))
+    # 3. 碎渣并回相邻片段（头一条太短就并到后一条）
+    merge_floor = max(0, int(cfg.get("min_chunk_chars", 10) or 0))
+    if merge_floor > 0 and len(chunks) > 1:
+        merged: list[str] = []
+        for chunk in chunks:
+            if merged and len(chunk) < merge_floor:
+                merged[-1] = f"{merged[-1]} {chunk}".strip()
+            else:
+                merged.append(chunk)
+        if len(merged) > 1 and len(merged[0]) < merge_floor:
+            merged[1] = f"{merged[0]} {merged[1]}".strip()
+            merged.pop(0)
+        chunks = merged
+
+    # 4. 条数上限
+    cap = max(1, int(cfg.get("max_chunks", 3) or 3))
     if len(chunks) > cap:
         chunks = chunks[: cap - 1] + ["\n".join(chunks[cap - 1 :])]
     return chunks or [text]
