@@ -164,7 +164,12 @@
     <h2>拟人化</h2>
     <div class="row"><label>最短打字延迟(ms)</label><input type="number" id="humanize.min_delay_ms" min="0" /></div>
     <div class="row"><label>最长打字延迟(ms)</label><input type="number" id="humanize.max_delay_ms" min="0" /></div>
-    <div class="row"><label>长回复分段</label><input type="checkbox" id="humanize.split_long" /></div>
+    <div class="row"><label>允许拆成多条消息</label><input type="checkbox" id="humanize.split_long" /></div>
+    <div class="row"><label>按行拆条（一行一条）</label><input type="checkbox" id="humanize.split_lines" /></div>
+    <div class="row"><label>单条长度上限</label><input type="number" id="humanize.split_at" min="20" /></div>
+    <div class="row"><label>一次最多几条</label><input type="number" id="humanize.max_chunks" min="1" /></div>
+    <p class="hint">提示词要求"一行一句"，这里按行拆成多条消息发送；模型偶尔写成整段时，
+      会按句末标点切开。「一次最多几条」是防刷屏上限，超出部分并入最后一条。</p>
   </section>
 
   <section class="card">

@@ -66,8 +66,18 @@ qqbot/
   因此有 `trigger.semantic.max_per_minute`（每群每分钟判定次数上限，超出后只响应直接点名）；
   `trigger.aliases` 填机器人昵称/别名，判定时可识别点名。私聊不受 `mode` 影响。
 
-**读图（`vision`）**
+**分行发送（`humanize`）**
 
+- 提示词要求模型「一行一句」，发送侧 [ai_chat](/Users/starst/Desktop/gits/qqbot/bot/plugins/ai_chat/__init__.py) 就把每一行**拆成一条独立消息**发出去
+  （行间随机 0.3~0.9s），这与"像群友那样连着敲几条"一致；
+- 模型偶尔仍会写成整段（没有换行）：此时按**句末标点**切开，实在没有标点才硬切，
+  不会再把两句话糊在一个气泡里；
+- `split_lines`（默认开）按行拆；`split_at` 单条长度上限；`max_chunks`（默认 5）一次最多几条，
+  超出部分并入最后一条——宁可变长，也不要连发一串刷屏；
+- `split_long=false` 则整段一次发出（恢复到旧行为）；
+- 复读那条路径永远只发一条：学到句子里的换行会被压平。
+
+**读图（`vision`）**
 - 消息里的图片会下载后以 base64 内联给模型（图床直链常有防盗链/过期，不能直接交给模型）；
 - `max_images` / `max_mb` / `timeout_sec` 限制张数、单张大小与下载超时，读取失败的单张跳过；
 - 模型必须支持图片输入，所以 `model` 要用 `deepseek-flash`（`deepseek-v4-pro` 是纯文本）；

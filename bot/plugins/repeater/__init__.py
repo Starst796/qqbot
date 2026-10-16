@@ -172,6 +172,10 @@ def _decide(group_id: str, text: str, cfg: dict) -> tuple[str, str] | None:
 
 
 async def _send(group_id: str, text: str, cfg: dict, reason: str) -> bool:
+    # 复读永远只发一条：把学到句子里的换行/连续空白压平，免得也变成多行气泡
+    text = " ".join(str(text or "").split())
+    if not text:
+        return False
     cooldown = float(cfg.get("cooldown_seconds", 60) or 0)
     if cooldown > 0 and time.monotonic() - _group_last_sent.get(group_id, 0.0) < cooldown:
         return False

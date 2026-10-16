@@ -33,6 +33,8 @@ DEFAULTS: dict[str, Any] = {
     "system_prompt": (
         "你是群聊里的一个普通成员，说话自然、简短、口语化，别像客服或 AI。"
         "不要自称 AI、不要长篇大论、不要列条目，通常 1~3 句话即可。"
+        "一行一句（系统会一行发一条消息），不要空行，不要用「-」「1.」这类列表符号，"
+        "不要 markdown，也不要写「第一」「第二」这种书面序号。"
         "看不懂或没必要的消息就少说，别硬答。"
     ),
     # ---- 触发 ----
@@ -123,8 +125,11 @@ DEFAULTS: dict[str, Any] = {
     "humanize": {
         "min_delay_ms": 800,
         "max_delay_ms": 2500,
+        # split_long=false 时整条一次发出；为 true 时按下面的规则拆成多条
         "split_long": True,
-        "split_at": 350,
+        "split_lines": True,   # 按行拆（提示词要求"一行一句"），每行一条消息
+        "split_at": 350,       # 单条长度上限，过长则按句末标点再切
+        "max_chunks": 5,       # 一次回复最多拆几条，超出部分并入最后一条
     },
     # ---- 检索参数 ----
     "retrieval": {

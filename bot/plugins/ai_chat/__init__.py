@@ -335,6 +335,50 @@ async def _build_messages(
     return messages
 
 
+_SENTENCE_END = "。！？!?…"
+
+
+def _split_reply(text: str, cfg: dict) -> list[str]:
+    """把回复拆成多条消息。
+
+    提示词要求"一行一句"，所以这里就按行拆——一行一条消息，等于替模型完成了
+    "分多条发送"。模型偶尔仍会写成整段（没有换行），此时按句末标点切开，
+    避免在 QQ 里糊成一大坨；实在没有标点才硬切。
+
+    `max_chunks` 是防刷屏上限：超出部分并进最后一条（宁可最后一条长一点，
+    也不要连发一串）。
+    """
+    text = (text or "").strip()
+    if not text or not cfg.get("split_long", True):
+        return [text] if text else []
+
+    limit = max(20, int(cfg.get("split_at", 350) or 350))
+    if cfg.get("split_lines", True):
+        pieces = [line.strip() for line in text.splitlines() if line.strip()]
+    else:
+        pieces = [text.replace("\n", " ").strip()]
+    if not pieces:
+        pieces = [text]
+
+    chunks: list[str] = []
+    for piece in pieces:
+        while len(piece) > limit:
+            cut = max(
+                (piece.rfind(ch, 0, limit + 1) for ch in _SENTENCE_END), default=-1
+            )
+            if cut < limit // 3:
+                cut = limit - 1  # 前半段没有合适断点，只能硬切
+            chunks.append(piece[: cut + 1].strip())
+            piece = piece[cut + 1 :].strip()
+        if piece:
+            chunks.append(piece)
+
+    cap = max(1, int(cfg.get("max_chunks", 5) or 5))
+    if len(chunks) > cap:
+        chunks = chunks[: cap - 1] + ["\n".join(chunks[cap - 1 :])]
+    return chunks or [text]
+
+
 async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
     human = config.get("humanize", {}) or {}
     delay = random.uniform(
@@ -343,10 +387,7 @@ async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
     )
     await asyncio.sleep(delay)
 
-    chunks = [text]
-    if human.get("split_long", True):
-        size = int(human.get("split_at", 350))
-        chunks = [text[i : i + size] for i in range(0, len(text), size)] or [text]
+    chunks = _split_reply(text, human)
 
     group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
     activity.mark_spoken(group_id)  # 让 repeater 在这之后一小段时间内让路
