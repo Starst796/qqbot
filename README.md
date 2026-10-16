@@ -282,6 +282,28 @@ sudo systemctl restart qqbot     # 让内存里的向量缓存失效（或用面
   否则 `SentenceTransformer("BAAI/bge-m3")` 会去连 huggingface.co，在国内会
   **静默卡死**（不报错、不返回，看着像在算）。
 
+### 网络受限时（`github.com` 被阻断）
+
+部分地区 `github.com:443` 不可达，但 `api.github.com`、`codeload.github.com`、
+`ssh.github.com:443` 通常仍可用。三种绕过方式，按省事程度排序：
+
+1. **SSH over 443**（推荐）：`~/.ssh/config` 加一段
+
+   ```
+   Host github.com
+     HostName ssh.github.com
+     Port 443
+     User git
+   ```
+
+   再把公钥填到 GitHub 的 Settings → SSH and GPG keys，之后 `git push` 照常用。
+2. **借道一台能连 github.com 的服务器**：本地先 `git push` 到服务器的裸仓库，
+   在服务器上再 `git --git-dir=<裸仓库> push https://github.com/<你>/<仓库>.git master`。
+   好处是**不碰账号设置**，也能完整保留提交历史。
+3. **走代理**：`git -c http.proxy=http://127.0.0.1:7890 push`（记得也配 `https.proxy`）。
+
+`git clone` / `git pull` 会被同一个域名挡住，同理适用。
+
 ## 隐私与合规
 
 - 群消息**全量落库**用于风格学习，请**在群内公开说明**并取得群友默许；
