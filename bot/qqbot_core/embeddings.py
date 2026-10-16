@@ -69,8 +69,12 @@ class Embedder:
         self._ensure_loaded()
         if self._model is None:
             return 0
-        # sentence-transformers 提供 get_sentence_embedding_dimension()
-        return int(self._model.get_sentence_embedding_dimension())
+        # sentence-transformers 6.x 把 get_sentence_embedding_dimension
+        # 改名成 get_embedding_dimension（旧名仅剩 FutureWarning），两个都兼容
+        get_dim = getattr(self._model, "get_embedding_dimension", None) or (
+            self._model.get_sentence_embedding_dimension
+        )
+        return int(get_dim())
 
     def encode(self, texts: list[str]) -> np.ndarray:
         """返回 L2 归一化后的 float32 矩阵，形状 (n, dim)，顺序与入参一致。"""

@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bot"))
 
 from qqbot_core import db  # noqa: E402
+from qqbot_core.media import is_placeholder_only  # noqa: E402
 
 QUERY = (
     "SELECT id, group_id, content FROM messages "
@@ -33,13 +34,18 @@ def main() -> int:
 
     total = 0
     written = 0
+    skipped_placeholder = 0
     with out.open("w", encoding="utf-8", newline="\n") as fh:
         for row in conn.execute(QUERY):
             content = str(row["content"])
-            # 占位消息（[图片] 之类）没有语义，服务器侧也不会给它做向量
+            total += 1
             if not content.strip():
                 continue
-            total += 1
+            # 与 msg_store 的 embeddable=bool(text) 对齐：
+            # 纯 `[图片]` / `[表情x2]` 这类占位消息没有语义，不参与向量化
+            if is_placeholder_only(content):
+                skipped_placeholder += 1
+                continue
             fh.write(
                 json.dumps(
                     {"i": int(row["id"]), "g": str(row["group_id"]), "c": content},
@@ -51,8 +57,11 @@ def main() -> int:
 
     size_mb = out.stat().st_size / 1048576
     print(f"导出 {written} 条 -> {out}（{size_mb:.2f} MB）")
-    if written != total:
-        print(f"  注意：跳过 {total - written} 条空内容")
+    print(
+        f"  候选 {total} 条，\n"
+        f"  跳过空内容 {total - written - skipped_placeholder} 条，\n"
+        f"  跳过纯占位 {skipped_placeholder} 条"
+    )
     return 0
 
 
