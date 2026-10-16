@@ -80,7 +80,10 @@ def main() -> int:
     def flush() -> None:
         nonlocal batch, added
         if batch:
-            added += db.add_messages_bulk(batch)
+            if args.dry_run:
+                added += len(batch)
+            else:
+                added += db.add_messages_bulk(batch)
             batch = []
 
     for msg in messages:

@@ -135,9 +135,9 @@ DEFAULTS: dict[str, Any] = {
     "retrieval": {
         "enabled": True,
         "embed_model": "BAAI/bge-m3",  # 内存紧张可换 BAAI/bge-small-zh-v1.5
-        "max_vectors_per_group": 8000,  # 每组最多保留的向量数（超出淘汰较旧）
-        "embed_batch": 16,
-        "embed_interval_sec": 20,       # 后台嵌入任务的轮询周期
+        "max_vectors_per_group": 30000,  # 每组最多保留的向量数（超出淘汰较旧）
+        "embed_batch": 64,
+        "embed_interval_sec": 20,       # 后台嵌入任务空闲时的轮询周期（有活时连续跑）
     },
 }
 

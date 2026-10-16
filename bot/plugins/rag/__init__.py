@@ -49,23 +49,24 @@ def _get_matrix(group_id: str) -> tuple[np.ndarray, list[str]]:
     return _cache[group_id]
 
 
-async def _process_pending() -> None:
+async def _process_pending() -> int:
+    """处理一批待向量化消息，返回本次处理条数（0 = 暂时没活干）。"""
     retrieval = config.get("retrieval", {}) or {}
     if not retrieval.get("enabled", True):
-        return
+        return 0
     embedder = get_embedder(str(retrieval.get("embed_model", "BAAI/bge-m3")))
     if not await asyncio.to_thread(lambda: embedder.available):
-        return
+        return 0
 
-    batch = int(retrieval.get("embed_batch", 16))
+    batch = int(retrieval.get("embed_batch", 64))
     rows = db.fetch_pending_embeddings(limit=batch)
     if not rows:
-        return
+        return 0
 
     texts = [str(r["content"]) for r in rows]
     vectors = await asyncio.to_thread(embedder.encode, texts)
     if vectors.shape[0] != len(rows):
-        return
+        return 0
 
     payload: list[tuple[int, str, int, bytes]] = []
     ids: list[int] = []
@@ -84,17 +85,25 @@ async def _process_pending() -> None:
         db.prune_group_vectors(gid, keep)
         _dirty.add(gid)
 
-    logger.debug(f"rag: 已向量化 {len(ids)} 条消息，涉及 {len(touched)} 个群")
+    return len(ids)
 
 
 async def _embed_loop() -> None:
+    """后台向量化：**有活就连续干，没活才按 embed_interval_sec 轮询**。
+
+    历史记录导入后可能有几万条待处理，若每批都固定 sleep 会拖到好几小时。
+    """
     while True:
         try:
-            await _process_pending()
+            done = await _process_pending()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"rag 后台向量化出错：{type(exc).__name__}: {exc}")
+            done = 0
+        if done:
+            await asyncio.sleep(0.2)
+            continue
         interval = int((config.get("retrieval", {}) or {}).get("embed_interval_sec", 20))
         await asyncio.sleep(max(5, interval))
 
