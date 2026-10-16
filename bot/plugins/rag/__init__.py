@@ -19,6 +19,7 @@ from nonebot import get_driver, logger
 
 from qqbot_core import config, db
 from qqbot_core.embeddings import blob_to_vec, get_embedder, vec_to_blob
+from qqbot_core.media import is_placeholder_only
 
 driver = get_driver()
 
@@ -63,6 +64,23 @@ async def _process_pending() -> int:
     if not rows:
         return 0
 
+    # 纯占位内容（`[图片:xxx.jpg]` / `[表情]` 这类）没有任何语义，
+    # 直接标记成已处理就行。否则它们会被反复取出来编码：既白烧 CPU，
+    # 又往向量库里灌噪声（历史聊天记录导入器就是这样写进 8000+ 条的）。
+    keep: list = []
+    skipped: list[int] = []
+    for row in rows:
+        if is_placeholder_only(str(row["content"])):
+            skipped.append(int(row["id"]))
+        else:
+            keep.append(row)
+    if skipped:
+        db.mark_embedded(skipped)
+    if not keep:
+        # 整批都是占位：返回非零，让循环立刻去取下一批而不是空等一轮
+        return len(skipped)
+
+    rows = keep
     texts = [str(r["content"]) for r in rows]
     vectors = await asyncio.to_thread(embedder.encode, texts)
     if vectors.shape[0] != len(rows):
