@@ -1,12 +1,12 @@
 # ============================================================================
-# nginx 反向代理（管理面板）—— 把 qq.starst.site 指向 NoneBot 的 127.0.0.1:8081
+# nginx 反向代理（管理面板）—— 把 qq.example.com 指向 NoneBot 的 127.0.0.1:8081
 #
 # 安装：
 #   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/qqbot
 #   sudo ln -s /etc/nginx/sites-available/qqbot /etc/nginx/sites-enabled/qqbot
 #   sudo htpasswd -c /etc/nginx/.htpasswd-qqbot <用户名>     # 生成访问口令
 #   sudo nginx -t && sudo systemctl reload nginx
-#   sudo certbot --nginx -d qq.starst.site                   # 签发 TLS（自动补 ssl_* 配置）
+#   sudo certbot --nginx -d qq.example.com                   # 签发 TLS（自动补 ssl_* 配置）
 #
 # 说明：面板本身不做鉴权，安全边界 = 这里的 BasicAuth + 只监听 127.0.0.1。
 # ============================================================================
@@ -14,7 +14,7 @@
 server {
     listen 80;
     listen [::]:80;
-    server_name qq.starst.site;
+    server_name qq.example.com;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -29,11 +29,11 @@ server {
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name qq.starst.site;
+    server_name qq.example.com;
 
     # certbot 会自动写入证书路径；首次签发前可先注释本 server 块
-    ssl_certificate     /etc/letsencrypt/live/qq.starst.site/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/qq.starst.site/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/qq.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/qq.example.com/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
     # ★ 访问口令：面板不含应用层鉴权，务必保留

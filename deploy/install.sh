@@ -9,7 +9,7 @@
 #   sudo bash deploy/install.sh \
 #        --app-dir /home/ubuntu/qqbot \
 #        --bare-repo /home/ubuntu/qqbot.git \
-#        --domain qq.starst.site
+#        --domain qq.example.com
 # ============================================================================
 set -euo pipefail
 
@@ -18,7 +18,7 @@ VENV_DIR=""
 DATA_DIR=""
 APP_USER="ubuntu"
 SERVICE_NAME="qqbot"
-DOMAIN="qq.starst.site"
+DOMAIN="qq.example.com"
 BRANCH="master"
 BARE_REPO=""
 DRY_RUN=0
@@ -31,7 +31,7 @@ usage() {
   --data-dir DIR     可写数据目录             默认 <app-dir>/data
   --user USER        运行服务的系统用户        默认 ubuntu
   --service NAME     systemd 服务名           默认 qqbot
-  --domain DOMAIN    对外域名                 默认 qq.starst.site
+  --domain DOMAIN    对外域名                 默认 qq.example.com
   --bare-repo DIR    裸仓库路径；提供则安装钩子
   --branch NAME      触发部署的分支            默认 master
   --dry-run          只渲染到 deploy/out/，不改系统

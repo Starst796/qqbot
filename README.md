@@ -1,6 +1,6 @@
 # QQ 聊天机器人（NoneBot2 + NapCat + DeepSeek）
 
-在单台服务器（`ubuntu@starst.site`）上自建一个 QQ 群聊 AI 机器人：
+在一台 Linux 服务器上自建一个 QQ 群聊 AI 机器人（下文以 `user@your-server` 指代）：
 
 - **NapCatQQ**（Docker）托管 QQ 小号，对外提供 OneBot 11 协议；
 - **NoneBot2**（systemd + venv）连接 OneBot，接入 **DeepSeek `deepseek-flash`**；
@@ -10,13 +10,13 @@
 - **风格注入**：全量落库群消息 → embedding 语义检索 / **接话对蒸馏** → 作为 few-shot 学习群体语气；
 - **学习型复读**：连续相同跟读 + 从群聊里学「前句→接话」按概率复述（不调用模型）；
 - **@ 触发 + 三层限流**，避免刷屏与烧额度；
-- 自带**管理面板**（`https://qq.starst.site`，nginx + BasicAuth），可在线调参。
+- 自带**管理面板**（`https://qq.example.com`，nginx + BasicAuth），可在线调参。
 
 ```
 QQ 群消息( @机器人 / 语义判定 ) ──▶ NapCatQQ(Docker, :3001 WS) ──▶ NoneBot2(systemd, :8081)
                                                      │  ├─ SQLite 消息库 + 向量
                                                      │  └─ DeepSeek deepseek-flash
-管理面板 ◀── nginx qq.starst.site ◀── 127.0.0.1:8081
+管理面板 ◀── nginx qq.example.com ◀── 127.0.0.1:8081
 ```
 
 ## 目录结构
@@ -37,7 +37,18 @@ qqbot/
 │       ├── ai_chat/          # 触发（@ / 语义判定）+ 限流 + 读图 + 调用模型
 │       └── admin_panel/      # 管理面板后端 + 页面
 ├── napcat/docker-compose.yml # NapCat 容器编排
-├── deploy/                   # systemd / nginx / sudoers / 钩子 / 安装脚本
+├── deploy/                   # 部署与运维脚本
+│   ├── install.sh            # 渲染并安装 systemd / sudoers / git 钩子
+│   ├── nginx.conf.example    # 面板反代模板（含 BasicAuth）
+│   ├── qqbot.service.template\qqbot-sudoers.template\post-receive.template
+│   ├── configure_onebot.py   # 自动写入 NapCat 的 OneBot 网络配置
+│   ├── import_chat_export.py # 导入 QQ 聊天记录导出（明文 JSON）
+│   ├── export_corpus.py      # 导出待向量化语料（供离线算向量）
+│   ├── local_embed.py        # 在**本机 GPU** 上批量算向量（比服务器 CPU 快得多）
+│   ├── import_vectors.py     # 把离线算好的向量导回服务器
+│   ├── cleanup_placeholders.py # 清理纯占位消息（`[图片]`）造成的垃圾向量
+│   └── copy_style_pairs.py   # 把一个群的接话对复制给另一个群（测试/迁移用）
+├── LICENSE                   # MIT
 └── README.md
 ```
 
@@ -68,7 +79,7 @@ qqbot/
 
 **分行发送（`humanize`）**
 
-- 提示词要求模型「一行一句」，发送侧 [ai_chat](/Users/starst/Desktop/gits/qqbot/bot/plugins/ai_chat/__init__.py) 就把每一行**拆成一条独立消息**发出去
+- 提示词要求模型「一行一句」，发送侧 [ai_chat](bot/plugins/ai_chat/__init__.py) 就把每一行**拆成一条独立消息**发出去
   （行间随机 0.3~0.9s），这与"像群友那样连着敲几条"一致；
 - 模型偶尔仍会写成整段（没有换行）：此时按**句末标点**切开，实在没有标点才硬切，
   不会再把两句话糊在一个气泡里；
@@ -131,7 +142,7 @@ docker --version || echo "需要安装 Docker"
 - NapCat（NTQQ 无头进程）约占 **1.5–2 GB 内存**，加上 embedding 模型（`bge-m3` 约 2 GB）。
   **可用内存 < 4 GB 时**：先把面板里的 embedding 模型换成 `BAAI/bge-small-zh-v1.5`（约 100 MB），
   或先加 2 GB swap。
-- 确认 `qq.starst.site` 已解析到本机（你已完成）。
+- 确认 `qq.example.com` 已解析到本机。
 
 ### 1. 上传代码并建裸仓库
 
@@ -142,7 +153,7 @@ mkdir -p /home/ubuntu/qqbot
 
 # 本地（d:\gits\qqbot）：
 git init && git add -A && git commit -m "init"
-git remote add origin ubuntu@starst.site:/home/ubuntu/qqbot.git
+git remote add origin user@your-server:/home/ubuntu/qqbot.git
 git push -u origin master
 ```
 
@@ -170,7 +181,7 @@ docker compose up -d
 docker compose logs -f      # 看是否起来
 
 # WebUI 只监听 127.0.0.1，用 SSH 隧道访问：
-# 本地：ssh -L 6099:127.0.0.1:6099 ubuntu@starst.site
+# 本地：ssh -L 6099:127.0.0.1:6099 user@your-server
 # 浏览器打开 http://127.0.0.1:6099 → 扫码登录 QQ 小号
 ```
 
@@ -188,7 +199,7 @@ sudo bash deploy/install.sh --dry-run     # 先预览
 sudo bash deploy/install.sh \
      --app-dir /home/ubuntu/qqbot \
      --bare-repo /home/ubuntu/qqbot.git \
-     --domain qq.starst.site
+     --domain qq.example.com
 
 sudo visudo -c
 sudo systemctl daemon-reload
@@ -203,17 +214,17 @@ sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/qqbot
 sudo ln -sf /etc/nginx/sites-available/qqbot /etc/nginx/sites-enabled/qqbot
 sudo htpasswd -c /etc/nginx/.htpasswd-qqbot admin   # 首次创建口令
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d qq.starst.site
+sudo certbot --nginx -d qq.example.com
 ```
 
-之后浏览器打开 `https://qq.starst.site`（需 BasicAuth），即可在线调整模型、限流、开关等。
+之后浏览器打开 `https://qq.example.com`（需 BasicAuth），即可在线调整模型、限流、开关等。
 
 ### 7. 验证
 
 ```bash
 ss -lntp | grep 3001                    # NapCat WS 在听
 systemctl status qqbot --no-pager
-curl -su admin https://qq.starst.site/  # 面板可达
+curl -su admin https://qq.example.com/  # 面板可达
 ```
 
 在群里 @ 机器人 提问 → 应收到回复；连续 @ 第二次会被限流静默丢弃；
@@ -232,6 +243,44 @@ curl -su admin https://qq.starst.site/  # 面板可达
 | 改配置 | 面板在线改，或编辑 `data/config.json`（自动热载） |
 | 重建接话对 | 面板「重建全部群的接话对」（后台跑，进度实时显示） |
 | 备份 | `data/qqbot.db`、`data/config.json`、`napcat/data/`、`bot/.env` |
+
+### 离线批量算向量（可选，但强烈建议）
+
+小服务器（4 vCPU）给两万多条历史消息补向量要跑 **约 2 小时**（给 2 万条消息编码的实测速率
+只有 2~4 条/秒），而同一份活在带 GPU 的本机上只要 **约 1 分钟**（实测 382 条/秒）。
+流程是「导出 → 本机算 → 导回」，**向量与设备无关**，可以放心跨机器搬运：
+
+```bash
+# 1. 服务器：导出语料（只含 id / 群号 / 正文，不打印内容）
+python deploy/export_corpus.py corpus.jsonl
+scp user@your-server:/home/ubuntu/corpus.jsonl .
+
+# 2. 本机（需 torch + sentence-transformers）：批量算向量
+#    有 NVIDIA 卡就装对应 CUDA 版本的 torch（50 系卡必须 cu128）
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install sentence-transformers
+python deploy/local_embed.py corpus.jsonl vectors.npz --model ./bge-m3 --device cuda --batch 256
+
+# 3. 传回并导入（upsert，不会删掉期间新到的消息）
+scp vectors.npz user@your-server:/home/ubuntu/
+ssh user@your-server "cd qqbot && venv/bin/python deploy/import_vectors.py /home/ubuntu/vectors.npz"
+sudo systemctl restart qqbot     # 让内存里的向量缓存失效（或用面板「重启服务」）
+```
+
+三个要点，都是踩过坑总结的：
+
+- **预处理必须同源**：`local_embed.py` 直接复用仓库里的 `qqbot_core.embeddings.Embedder`，
+  保证截断长度、`max_seq_length`、长度排序、L2 归一化与线上完全一致。
+  只要模型权重相同，本机算的向量和服务器算的可以**混用**（实测拿一条消息作 query
+  去检索，自身相似度为 `1.00000`）。
+- **语料要排除纯占位消息**（`[图片:xxx.jpg]` 这类毫无语义，历史导入器会产生几千条）：
+  `export_corpus.py` 用 `qqbot_core.media.is_placeholder_only()` 过滤。
+  这类行如果以 `embedded=0` 入座，后台循环会一直把它们当正常消息编码；
+  `rag` 插件现在也会在循环里直接跳过（防御），`cleanup_placeholders.py` 用来清已产生的垃圾向量。
+- **手动在服务器上跑脚本要带 `HF_HOME`**（它只写在 systemd 单元里）：
+  `HF_HOME=/path/to/qqbot/data/hf HF_HUB_OFFLINE=1 venv/bin/python ...`。
+  否则 `SentenceTransformer("BAAI/bge-m3")` 会去连 huggingface.co，在国内会
+  **静默卡死**（不报错、不返回，看着像在算）。
 
 ## 隐私与合规
 
@@ -256,7 +305,9 @@ curl -su admin https://qq.starst.site/  # 面板可达
 - **群功能开关优先于一切触发判定**：关掉的群连接话判定都不会发起，等于顺手省下这笔调用。
 - **复读不花模型钱，但会"学到什么说什么"**：所以屏蔽词与拉黑句是必需品而不是可选项；
   拿不准就把 `learn_replies` 关掉，只留"连续相同跟读"这一条最安全的路径。
-- **接话对蒸馏是一次性的离线成本**：重建时要把每组最近约 2000 条消息过一遍并编码向量（CPU 上较慢），
+- **接话对蒸馏是一次性的离线成本**：重建时会把每组最近 `style.distill.scan_messages` 条消息过一遍
+  （默认 `20000`，**要调到不小于该群消息总量**，否则候选池被饿死、抽不满 `max_pairs`），并逐条编码向量
+  （CPU 上较慢，命中上限 800 对时约 50 秒；有 GPU 可参考 `deploy/local_embed.py` 的做法离线算完再导回），
   之后每次回复只做一次向量检索；`llm_filter` 打开则额外按候选对数量计费。
   数据量涨了、或群里语气变了，重新点一次重建即可。
 - **读图会占带宽与上下文**：图片走 base64 内联，单张上限默认 5 MB、单条最多 3 张；
