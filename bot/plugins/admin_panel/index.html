@@ -642,7 +642,8 @@ $("btnPairs").onclick = () => {
 // 接话对分页浏览：每页 PAIRS_LIMIT 条，用「◀ 上一页 / 下一页 ▶」翻页
 const PAIRS_LIMIT = 50;
 let pairsState = { group_id: "", offset: 0, total: 0 };
-let pairsToken = 0; // 丢弃过期响应：连点「下一页」时以最后一次请求为准
+let pairsToken = 0;   // 丢弃过期响应：连点时以最后一次请求为准
+let pairsPending = 0; // “待显示页”的偏移量，作为翻页计算的基准
 
 async function viewPairs(gid, offset) {
   const want = Math.max(0, Number(offset) || 0);
@@ -661,6 +662,7 @@ async function viewPairs(gid, offset) {
   if (!list.length && want > 0) return viewPairs(gid, (pages - 1) * PAIRS_LIMIT);
 
   pairsState = { group_id: gid, offset: want, total };
+  pairsPending = want;
   const page = Math.floor(want / PAIRS_LIMIT) + 1;
   const to = want + list.length;
 
@@ -688,12 +690,19 @@ async function viewPairs(gid, offset) {
   $("pairsBox").style.display = "block";
 }
 
-$("pairsPrev").onclick = () => {
-  if (pairsState.group_id) viewPairs(pairsState.group_id, pairsState.offset - PAIRS_LIMIT);
-};
-$("pairsNext").onclick = () => {
-  if (pairsState.group_id) viewPairs(pairsState.group_id, pairsState.offset + PAIRS_LIMIT);
-};
+// 翻页以「待显示页」为基准：连点两下就翻两页，不会被上一次的响应拖住；
+// 同时把目标页码钳制在 [0, 末页] 区间内
+function pairsStep(delta) {
+  if (!pairsState.group_id) return;
+  const pages = Math.max(1, Math.ceil(pairsState.total / PAIRS_LIMIT));
+  const current = Math.floor(pairsPending / PAIRS_LIMIT);
+  const target = Math.min(pages - 1, Math.max(0, current + delta));
+  pairsPending = target * PAIRS_LIMIT;
+  viewPairs(pairsState.group_id, pairsPending);
+}
+
+$("pairsPrev").onclick = () => pairsStep(-1);
+$("pairsNext").onclick = () => pairsStep(1);
 
 $("pairsList").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-pair-del]");
