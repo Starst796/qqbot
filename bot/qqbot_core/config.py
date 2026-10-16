@@ -177,7 +177,7 @@ DEFAULTS: dict[str, Any] = {
         # 带工具后每轮可能多调几次模型，成本随群活跃度线性上升。
         "only_when_addressed": True,
         "selective": True,             # 按意图筛工具（「相关即带」）；关掉则每次带上全部可见工具
-        "deferred_auto_enable": True,  # 允许模型调 tools.find 现场发现低频工具
+        "deferred_auto_enable": True,  # 允许模型调 tools_find 现场发现低频工具
         "max_rounds": 3,               # 工具循环最多几轮，防跑飞
         "timeout_sec": 25,             # 单个工具的执行超时（秒）
         "max_result_chars": 1600,      # 工具返回给模型的内容上限

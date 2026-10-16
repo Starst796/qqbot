@@ -153,21 +153,25 @@ qqbot/
 
   | 工具 | 可见性 | 说明 |
   | --- | --- | --- |
-  | `time.now` | 相关即带 | 当前日期 / 时间 / 星期 |
-  | `web.search` | 相关即带 | 联网搜索（Tavily 兼容接口） |
-  | `group.search` | 相关即带 | 在本群历史语料里做**语义检索**（翻旧账） |
-  | `tools.find` | 总是带 | 让模型现场发现低频工具 |
+  | `time_now` | 相关即带 | 当前日期 / 时间 / 星期 |
+  | `web_search` | 相关即带 | 联网搜索（Tavily 兼容接口） |
+  | `group_search` | 相关即带 | 在本群历史语料里做**语义检索**（翻旧账） |
+  | `tools_find` | 总是带 | 让模型现场发现低频工具 |
+
+  ⚠️ **工具名只能用 `[a-zA-Z0-9_-]`**（不能用点号）：模型 API 对 `function.name`
+  有这个字符集约束，夹带非法字符会让**整个请求** 400，而**不是**那一个工具失败。
+  `register()` 会自动把手非法字符归一化成下划线并打警告，但请直接写合法名字。
 
 - **可见性**（省 token 的关键，思路参考 Pallas-Bot）：`visible` 只在话题沾边时带上；
-  `deferred` 平时不带，模型可调 `tools.find` 现场发现，发现后本轮后续调用一直可用。
+  `deferred` 平时不带，模型可调 `tools_find` 现场发现，发现后本轮后续调用一直可用。
   群里问“你会啥 / 有什么功能”时会把**只读**工具整批放开，免得模型空口编造自己的能力。
 - **联网搜索**：接口地址在面板可改；**密钥只从环境变量 `TAVILY_API_KEY` 读**（见 `.env.example`），
   不进 `config.json`——因为面板的 `/api/config` 会把配置原样吐出来。
-  没配时 `web.search` 返回一句“如实告诉用户搜不了，不要编造”，而不是抛错死掉。
+  没配时 `web_search` 返回一句“如实告诉用户搜不了，不要编造”，而不是抛错死掉。
 - 面板「工具调用（被 @ 时）」卡片里有「查看已注册工具」按钮（`GET /api/tools`），
   可看当前注册了哪些工具，以及某句话会带上哪些（`/api/tools?text=...`）。
 - 新增工具只需在插件 import 时 `qqbot_core.tools.register(...)`，需要读本群语料的工具参考
-  `ai_chat.register_tools()` 里 `group.search` 的写法（群号用 ContextVar 传，不塞进工具参数）。
+  `ai_chat.register_tools()` 里 `group_search` 的写法（群号用 ContextVar 传，不塞进工具参数）。
 
 ---
 

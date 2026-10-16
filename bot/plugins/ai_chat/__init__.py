@@ -303,7 +303,7 @@ async def _tool_loop(messages: list[dict], cfg: dict, question: str) -> str:
                 logger.info(f"ai_chat: 调用工具 {name}({args})")
                 result = await tools.call(tool, args)
                 if name == tools.FIND_TOOL:
-                    # tools.find 命中后，把发现的延迟工具加进本轮可用集合
+                    # tools_find 命中后，把发现的延迟工具加进本轮可用集合
                     for extra in tools.match_deferred(str(args.get("query") or "")):
                         known.setdefault(extra.name, extra)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
@@ -316,7 +316,7 @@ async def _tool_loop(messages: list[dict], cfg: dict, question: str) -> str:
 def register_tools() -> None:
     """注册需要读本群语料的工具（幂等，可重复调用）。
 
-    core 不能反向依赖 plugins，所以 `group.search` 放这里注册（ai_chat 已经
+    core 不能反向依赖 plugins，所以 `group_search` 放这里注册（ai_chat 已经
     在 import plugins.rag，不会引入新的依赖方向）。面板的 `/api/tools` 也会调它。
     """
     try:
@@ -350,7 +350,7 @@ def register_tools() -> None:
 
     tools.register(
         tools.Tool(
-            name="group.search",
+            name="group_search",
             description=(
                 "在本群历史聊天记录里做语义检索，找群友以前说过的话、提过的信息。"
                 "问到「之前是不是聊过」「群里谁说过」「上次那个」这类需要翻旧账的问题时用。"

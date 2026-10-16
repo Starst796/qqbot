@@ -3,13 +3,13 @@
 分层原则
 --------
 * 本模块只依赖 core（`config` / `httpx`），放"与插件无关"的工具：时间、联网搜索。
-* 需要读群语料、向量库的工具（如 `group.search`）由插件在 import 时
+* 需要读群语料、向量库的工具（如 `group_search`）由插件在 import 时
   `register()` 进来，避免 core 反向依赖 plugins。
 
 可见性（省 token 的关键，思路参考 Pallas-Bot）
 ----------------------------------------------
 * `visible`  —— 意图域命中（`hints` 里出现触发词）才带上；没有 `hints` 的永远带
-* `deferred` —— 平时不带，模型可以调 `tools.find` 现场发现；发现后本轮后续调用带上
+* `deferred` —— 平时不带，模型可以调 `tools_find` 现场发现；发现后本轮后续调用带上
 
 另有"盘点口语"特判：群里问"你会啥 / 有什么功能"时，把**只读**工具全放出来，
 免得模型空口编造自己有什么能力。
@@ -26,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
@@ -39,7 +40,25 @@ from qqbot_core import config
 Handler = Callable[[dict], Awaitable[str]]
 
 # 模型用来"现场发现"延迟工具的元工具
-FIND_TOOL = "tools.find"
+FIND_TOOL = "tools_find"
+
+# ⚠️ OpenAI 兼容接口对 `function.name` 有硬约束：只允许 `[a-zA-Z0-9_-]`，且 ≤64 字符。
+# 踩过的坑：最初把工具命名成 `web.search` 这种带点号的名字，DeepSeek 直接 **400 拒掉
+# 整个请求**（`string does not match pattern '^[a-zA-Z0-9_-]+$'`）—— 表现是
+# "@ 机器人完全没反应"，而不是"这一个工具失败"（两者排查思路完全不同）。
+# 离线测试时用的名字是 `get_time`（下划线）所以没暴露。现在注册时统一归一化，
+# 插件往 `register()` 里塞什么名字都进不了非法字符。
+_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+_MAX_NAME_LEN = 64
+
+
+def normalize_name(name: str) -> str:
+    """把工具名归一化成模型 API 能接受的字符集（点号等 → 下划线）。"""
+    raw = str(name or "").strip()
+    cleaned = _NAME_RE.sub("_", raw)[:_MAX_NAME_LEN]
+    if cleaned != raw:
+        logger.warning(f"tools: 工具名 {raw!r} 含模型 API 不接受的字符，已归一化为 {cleaned!r}")
+    return cleaned
 
 # 只读工具的能力标签，盘点口语时整批放开
 _INVENTORY_PATTERNS = (
@@ -92,7 +111,12 @@ _REGISTRY: dict[str, Tool] = {}
 # 注册表
 # --------------------------------------------------------------------------- #
 def register(tool: Tool, *, replace: bool = True) -> Tool:
-    """注册（或覆盖）一个工具。插件在 import 时调用。"""
+    """注册（或覆盖）一个工具。插件在 import 时调用。
+
+    名字会先过 `normalize_name()`：模型 API 只接受 `[a-zA-Z0-9_-]`，
+    夹带非法字符会让**整个请求** 400（不是一个工具失败）。
+    """
+    tool.name = normalize_name(tool.name)
     if not tool.name:
         raise ValueError("tool.name 不能为空")
     if tool.name in _REGISTRY and not replace:
@@ -169,7 +193,7 @@ def match_deferred(query: str) -> list[Tool]:
 def select(text: str, active: tuple[str, ...] | set[str] = ()) -> list[Tool]:
     """按本轮消息挑要带上模型的工具。
 
-    `active` 是本轮已被 `tools.find` 激活的延迟工具名（会一直带到本轮结束）。
+    `active` 是本轮已被 `tools_find` 激活的延迟工具名（会一直带到本轮结束）。
     """
     cfg = _cfg()
     black = _blacklist()
@@ -312,10 +336,10 @@ async def _web_search(args: dict) -> str:
 
 
 def register_builtins() -> None:
-    """注册 core 自带的工具（时间、联网搜索、tools.find）。重复调用安全。"""
+    """注册 core 自带的工具（时间、联网搜索、tools_find）。重复调用安全。"""
     register(
         Tool(
-            name="time.now",
+            name="time_now",
             description=(
                 "查询当前日期、时间和星期。问到「现在几点」「今天几号」「星期几」这类问题时用，"
                 "不要凭记忆猜时间。"
@@ -328,7 +352,7 @@ def register_builtins() -> None:
     )
     register(
         Tool(
-            name="web.search",
+            name="web_search",
             description=(
                 "联网搜索互联网上的最新信息。涉及时事新闻、近期发生的事、你不确定或"
                 "答案会随时间变化的事实时使用。返回标题、链接和摘要。"
