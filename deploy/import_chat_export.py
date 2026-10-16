@@ -48,6 +48,11 @@ def main() -> int:
     ap.add_argument("path")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--group-id", default="")
+    ap.add_argument(
+        "--bot-uin",
+        default="",
+        help="机器人自身 QQ；用于把它的发言标成 is_bot（导出文件的 selfUin 是导出者本人）",
+    )
     args = ap.parse_args()
 
     data = json.loads(Path(args.path).read_text(encoding="utf-8"))
@@ -59,7 +64,9 @@ def main() -> int:
         print("无法确定 group_id（chatInfo.peerUid 为空）；可用 --group-id 指定")
         return 2
 
-    print(f"群号: {group_id}   自身QQ: {self_uin or '(未知)'}   导出条数: {len(messages)}")
+    print(f"群号: {group_id}   导出者QQ: {self_uin or '(未知)'}   导出条数: {len(messages)}")
+    if args.bot_uin:
+        print(f"机器人QQ(标 is_bot): {args.bot_uin}")
     existing = db.message_keys(group_id)
     print(f"库中已有该群消息: {len(existing)}")
 
@@ -119,7 +126,7 @@ def main() -> int:
                 "nickname": name,
                 "content": text,
                 "ts": ts,
-                "is_bot": uid == self_uin,
+                "is_bot": bool(args.bot_uin) and uid == args.bot_uin,
             }
         )
         if len(batch) >= BATCH:
