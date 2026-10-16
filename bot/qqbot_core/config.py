@@ -57,6 +57,11 @@ DEFAULTS: dict[str, Any] = {
         "max_mb": 5.0,        # 单张图片大小上限
         "timeout_sec": 20,    # 单张下载超时
     },
+    # ---- 群功能开关（只控制机器人是否在该群说话，不影响语料入库）----
+    "groups": {
+        "default_enabled": True,  # 没在 enabled 里单独写的群是否响应
+        "enabled": {},            # 群号 -> bool，由面板的每群开关写入
+    },
     # ---- 限流（默认值，可在面板调整）----
     "rate_limit": {
         "per_group_seconds": 30,   # 同一群两次回复最小间隔
@@ -153,6 +158,15 @@ def get(path: str, default: Any = None) -> Any:
             return default
         node = node[part]
     return node
+
+
+def group_enabled(group_id: str) -> bool:
+    """群功能开关：`groups.enabled` 里显式配置优先，其余按 `default_enabled`。"""
+    groups = get("groups", {}) or {}
+    override = (groups.get("enabled") or {}).get(str(group_id))
+    if isinstance(override, bool):
+        return override
+    return bool(groups.get("default_enabled", True))
 
 
 def save(new_config: dict[str, Any]) -> dict[str, Any]:

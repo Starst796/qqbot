@@ -4,6 +4,8 @@
       `at`：必须 @机器人 或命中前缀；`semantic`：任意消息都先过一道
       低成本的"接话判定"，判定通过才真正回复，直接点名时跳过判定。
       私聊按配置直接回。
+      另有每群一个的**群功能开关**（`groups.enabled`），关掉的群一律不回应；
+      面板里列出的是机器人已加入的全部群。
 读图：消息里的图片下载后以 base64 内联给模型（需模型支持图片输入）。
 限流：三维——每群最小间隔、每用户冷却、全局并发上限；超限一律静默丢弃，
       避免刷屏与烧额度。默认值来自 config.json，可在管理面板在线调整。
@@ -59,6 +61,8 @@ def _enabled_for(event: MessageEvent) -> bool:
     if isinstance(event, GroupMessageEvent):
         if str(event.user_id) == str(event.self_id):
             return False  # 机器人自己的消息永不触发，免得自问自答
+        if not config.group_enabled(str(event.group_id)):
+            return False  # 该群的群功能开关关掉了
         if _addressed(event):
             return True
         if trigger.get("mode", "at") == "semantic":

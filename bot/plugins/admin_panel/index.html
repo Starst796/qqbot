@@ -136,17 +136,21 @@
   </section>
 
   <section class="card">
-    <h2>上下文与数据管理</h2>
+    <h2>群功能开关与数据管理</h2>
+    <div class="row"><label>未单独设置的群默认响应</label><input type="checkbox" id="groups.default_enabled" /></div>
     <div class="actions-inline">
       <button class="ghost" id="btnGroups">刷新群列表</button>
       <input type="text" id="purgeUser" placeholder="输入 QQ 号" style="max-width:150px" />
       <button class="ghost" id="btnPurgeUser">清除该用户数据</button>
       <button class="ghost danger" id="btnClearAll">清空全部记录</button>
+      <span class="hint2" id="groupsState"></span>
     </div>
     <table id="groupsTable">
-      <thead><tr><th>群号</th><th>消息</th><th>上下文</th><th>最后消息</th><th>操作</th></tr></thead>
+      <thead><tr><th>响应</th><th>群号</th><th>群名</th><th>消息</th><th>上下文</th><th>最后消息</th><th>操作</th></tr></thead>
       <tbody></tbody>
     </table>
+    <p class="hint2">列表来自机器人<b>已加入的全部群</b>（未连接时只显示有聊天记录的群）。取消勾选即关闭该群，
+      机器人不再回应它（语料入库仍由「全量落库群消息」控制）；改动即时生效，无需保存。</p>
     <div id="msgBox" style="display:none;margin-top:18px">
       <h2 id="msgTitle"></h2>
       <div id="msgList"></div>
@@ -292,14 +296,18 @@ async function loadGroups() {
   const d = await r.json();
   const tb = document.querySelector("#groupsTable tbody");
   tb.innerHTML = "";
+  $("groupsState").textContent = d.joined_ok
+    ? "" : "（未连上 OneBot，暂时只显示有记录的群）";
   if (!d.groups || !d.groups.length) {
-    tb.innerHTML = '<tr><td colspan="5" style="color:var(--mut)">暂无数据</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" style="color:var(--mut)">暂无数据</td></tr>';
     return;
   }
   for (const g of d.groups) {
     const tr = document.createElement("tr");
     tr.innerHTML =
+      `<td><input type="checkbox" data-gid="${g.group_id}" ${g.enabled ? "checked" : ""} /></td>` +
       `<td>${g.group_id}</td>` +
+      `<td>${escapeHtml(g.group_name || "—")}</td>` +
       `<td>${g.messages}</td>` +
       `<td>${g.sessions}</td>` +
       `<td>${fmtTime(g.last_ts)}</td>` +
@@ -311,6 +319,35 @@ async function loadGroups() {
     tb.appendChild(tr);
   }
 }
+
+// 群功能开关：勾选/取消即写回配置（groups.enabled.<群号>），热生效
+document.querySelector("#groupsTable").addEventListener("change", async (ev) => {
+  const box = ev.target.closest("input[type=checkbox][data-gid]");
+  if (!box) return;
+  const gid = box.dataset.gid;
+  const on = box.checked;
+  box.disabled = true;
+  try {
+    const cfg = JSON.parse(JSON.stringify(CONFIG));
+    cfg.groups = cfg.groups || {};
+    cfg.groups.enabled = cfg.groups.enabled || {};
+    cfg.groups.enabled[gid] = on;
+    const r = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "保存失败");
+    fillForm(d.config);
+    toast(`群 ${gid} 已${on ? "开启" : "关闭"}`);
+  } catch (e) {
+    box.checked = !on;
+    toast(e.message, true);
+  } finally {
+    box.disabled = false;
+  }
+});
 
 document.querySelector("#groupsTable").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button");

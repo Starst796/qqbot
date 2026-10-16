@@ -5,6 +5,7 @@
 - **NapCatQQ**（Docker）托管 QQ 小号，对外提供 OneBot 11 协议；
 - **NoneBot2**（systemd + venv）连接 OneBot，接入 **DeepSeek `deepseek-flash`**；
 - **触发**：群内默认「@ 机器人」；可切换为 **semantic** —— 任意群消息先过一道低成本接话判定；
+- **群功能开关**：每个群可单独关掉，避免在不想要的群里刷屏（面板列出已加入的全部群）；
 - **读图**：消息里的图片下载后内联给模型（`deepseek-flash` 支持图片输入）；
 - **风格注入**：全量落库群消息 → embedding 语义检索 → 作为 few-shot 学习群体语气；
 - **@ 触发 + 三层限流**，避免刷屏与烧额度；
@@ -68,6 +69,15 @@ qqbot/
 - `max_images` / `max_mb` / `timeout_sec` 限制张数、单张大小与下载超时，读取失败的单张跳过；
 - 模型必须支持图片输入，所以 `model` 要用 `deepseek-flash`（`deepseek-v4-pro` 是纯文本）；
 - 服务器没装 `Pillow`：图片只做大小/类型校验，不做缩放或转码。
+
+**群功能开关（`groups`）**
+
+- 面板「群功能开关与数据管理」里每群一个勾选框，写回 `groups.enabled`（群号 -> bool），**即时生效**；
+- 未单独设置的群按 `groups.default_enabled`（默认 `true`）。想改成"白名单"模式就把它设为 `false`，
+  再逐个打开要用的群；
+- 面板列出的是 **机器人已加入的全部群**（通过 OneBot `get_group_list` 拉取，含尚无消息的新群）；
+  OneBot 未连接时退回只显示有聊天记录的群，页面会标注；
+- 该开关只管"要不要在该群说话"，**不影响语料入库**（那由 `storage.log_all_group_messages` 控制）。
 
 ---
 
@@ -202,6 +212,7 @@ curl -su admin https://qq.starst.site/  # 面板可达
 - **思考模式默认关闭**：群聊场景求快；需要推理时在面板打开。
 - **semantic 触发有额外调用成本**：每条群消息都要判一次"该不该接话"，活跃群建议配合
   `trigger.semantic.max_per_minute` 与限流一起用；不确定就先留在 `at` 模式。
+- **群功能开关优先于一切触发判定**：关掉的群连接话判定都不会发起，等于顺手省下这笔调用。
 - **读图会占带宽与上下文**：图片走 base64 内联，单张上限默认 5 MB、单条最多 3 张；
   群里图多时模型输入会明显变长，可调小 `vision.max_mb` / `vision.max_images` 或直接关掉读图。
 - OneBot 端口仅 `127.0.0.1`；面板公网访问必须经 nginx BasicAuth。
