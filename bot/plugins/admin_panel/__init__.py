@@ -379,31 +379,6 @@ def _register(app) -> None:
             changed += 1
         return _json({"ok": True, "changed": changed})
 
-    @app.post("/api/stickers/sync-persona")
-    async def _stickers_sync_persona(request: Request):
-        """把 QQ 收藏表情的前 N 张本地化成人设图（默认 10 张）。"""
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        count = int(body.get("count") or config.get("stickers.persona_sync_count", 10))
-        start = int(body.get("start") or 0)
-        slots = body.get("slots") if isinstance(body.get("slots"), list) else None
-        try:
-            result = await asyncio.wait_for(
-                stickers.sync_custom_faces(count=count, start=start, slots=slots),
-                timeout=180,
-            )
-        except asyncio.TimeoutError:
-            return _json({"ok": False, "error": "同步超时，稍后重试"}, status=504)
-        except Exception as exc:  # noqa: BLE001
-            return _json(
-                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=409
-            )
-        return _json({"ok": True, **result})
-
     @app.get("/api/stickers/{sticker_id}/file")
     async def _sticker_file(sticker_id: int):
         row = db.get_sticker(sticker_id)

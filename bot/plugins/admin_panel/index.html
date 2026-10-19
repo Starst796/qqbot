@@ -259,13 +259,12 @@
     <h2>表情包库</h2>
     <div class="stats" id="stickerStats">—</div>
     <div class="actions-inline">
-      <button class="ghost" id="btnStickerSync">从 QQ 收藏同步前 10 张</button>
       <button class="ghost" id="btnStickerUpload">上传图片</button>
       <input type="file" id="stickerUpload" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden />
       <button class="ghost" id="btnStickerApprove">批准当前待审核</button>
       <span class="hint2" id="stickerState"></span>
     </div>
-    <p class="hint2">默认十张人设图从 QQ 收藏的前 10 张本地化而来，标记为 persona，永远排最前。
+    <p class="hint2">上传后可点「设人设」把图排到人设区，人设图永远排最前。
       群友发的表情默认待审核，批准后才会进入候选；同图按内容去重。</p>
     <div class="actions-inline" style="margin-top:12px">
       <select id="stickerStatus">
@@ -301,8 +300,6 @@
     <div class="row"><label>自动批准所需出现次数</label><input type="number" id="stickers.learn.min_seen" min="1" /></div>
     <div class="row"><label>学习下载每分钟上限</label><input type="number" id="stickers.learn.max_per_minute" min="0" /></div>
     <div class="row"><label>普通图片也学习（不建议）</label><input type="checkbox" id="stickers.learn.all_images" /></div>
-    <div class="row"><label>首次启动自动同步人设图</label><input type="checkbox" id="stickers.auto_sync_persona" /></div>
-    <div class="row"><label>同步张数</label><input type="number" id="stickers.persona_sync_count" min="1" max="100" /></div>
   </section>
 
   <section class="card" data-page="data">
@@ -1038,6 +1035,7 @@ function renderStickerGrid(items) {
       `<div class="ops">` +
       (approved ? "" : `<button class="ghost mini" data-sact="approve" data-sid="${s.id}">批准</button>`) +
       `<button class="ghost mini" data-sact="toggle" data-sid="${s.id}" data-on="${enabled ? 1 : 0}">${enabled ? "停用" : "启用"}</button>` +
+      `<button class="ghost mini" data-sact="${persona ? "unpersona" : "persona"}" data-sid="${s.id}">${persona ? "取消人设" : "设人设"}</button>` +
       `<button class="ghost mini" data-sact="edit" data-sid="${s.id}">标签</button>` +
       `<button class="ghost mini danger" data-sact="delete" data-sid="${s.id}">删除</button>` +
       `</div></div>`
@@ -1095,6 +1093,12 @@ $("stickerGrid").addEventListener("click", async (ev) => {
     } else if (act === "toggle") {
       await stickerPost(`/api/stickers/${id}/update`, { enabled: btn.dataset.on !== "1" });
       toast(btn.dataset.on === "1" ? "已停用" : "已启用");
+    } else if (act === "persona") {
+      await stickerPost(`/api/stickers/${id}/update`, { persona: true, approved: true, enabled: true });
+      toast("已设为人设图");
+    } else if (act === "unpersona") {
+      await stickerPost(`/api/stickers/${id}/update`, { persona: false });
+      toast("已取消人设");
     } else if (act === "edit") {
       const s = stickerItems[id] || {};
       const mood = prompt("情绪（如：无语 / 喝茶 / 困，留空表示不设）", s.mood || "");
@@ -1141,24 +1145,6 @@ $("stickerUpload").onchange = async (ev) => {
   } catch (e) {
     $("stickerState").textContent = "";
     toast(e.message, true);
-  }
-};
-
-$("btnStickerSync").onclick = async () => {
-  const input = prompt("同步 QQ 收藏表情的前几张？", "10");
-  if (input === null) return;
-  const count = Math.max(1, Math.min(100, Number(input) || 10));
-  $("btnStickerSync").disabled = true;
-  $("stickerState").textContent = "正在从 QQ 收藏同步（大图可能需要几十秒）…";
-  try {
-    const d = await stickerPost("/api/stickers/sync-persona", { count });
-    toast(`同步完成：新增 ${d.added}，更新 ${d.promoted}，跳过 ${d.skipped}`);
-    await loadStickers();
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    $("btnStickerSync").disabled = false;
-    $("stickerState").textContent = "";
   }
 };
 

@@ -751,15 +751,6 @@ def sticker_stats() -> dict[str, int]:
     return {k: int(row[k] or 0) for k in row.keys()}
 
 
-def persona_sticker_count() -> int:
-    conn = connect()
-    with _lock:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM stickers WHERE persona = 1"
-        ).fetchone()
-    return int(row["c"])
-
-
 def stats() -> dict[str, Any]:
     conn = connect()
     with _lock:

@@ -4,7 +4,7 @@
 （`segment.type` / `segment.data`）。真正的发送（`MessageSegment.image`）由插件完成。
 
 三种来源：
-* `persona` —— 人设图（QQ 收藏前 N 张自动同步 + 手工补充），永远排在候选最前面。
+* `persona` —— 人设图（手工补充或通过面板标记），永远排在候选最前面。
 * `learned` —— 从群消息里抓到的图片表情，默认待审核，面板批准后才可发送。
 * `upload`  —— 管理面板手动上传，直接可用。
 
@@ -23,7 +23,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 import httpx
-from nonebot import get_bots, get_driver, logger
+from nonebot import get_driver, logger
 
 from . import config, db
 
@@ -514,116 +514,6 @@ def save_upload(data: bytes, filename: str = "") -> dict[str, Any] | None:
     return db.get_sticker(int(new_id)) if new_id else db.get_sticker_by_sha(digest)
 
 
-# QQ 收藏表情前 10 张的默认情绪/标签（顺序按当前账号的收藏列表）。
-# 只用于“首次本地化”，之后可在面板里逐张改；不写死文件名，换图也不会错位。
-_PERSONA_SLOTS: list[dict[str, Any]] = [
-    {"mood": "喝茶", "tags": ["干饭", "吃饭", "吃货"]},
-    {"mood": "无语", "tags": ["无语", "发呆"]},
-    {"mood": "疑惑", "tags": ["疑惑", "问号"]},
-    {"mood": "疑惑", "tags": ["疑惑", "惊讶"]},
-    {"mood": "喝茶", "tags": ["干饭", "悠闲"]},
-    {"mood": "无语", "tags": ["无语", "冷"]},
-    {"mood": "困", "tags": ["困", "摆烂"]},
-    {"mood": "招呼", "tags": ["招呼", "念叨"]},
-    {"mood": "无语", "tags": ["无语", "服了"]},
-    {"mood": "招呼", "tags": ["招呼", "在呢"]},
-]
-
-
-async def sync_custom_faces(
-    count: int = 10, start: int = 0, slots: list[dict[str, Any]] | None = None
-) -> dict[str, int]:
-    """把 QQ 账号「收藏表情」的前 N 张本地化成人设表情。
-
-    QQ 的收藏表情（fetch_custom_face）是公开图床 URL，下载后存到
-    `data/stickers/persona/`，按顺序标记 persona=1，永远排在候选最前。
-    这也是“默认十张”在仓库之外持久化的方式：文件在 data 里，重启不丢。
-    """
-    ensure_dirs()
-    bots = get_bots()
-    if not bots:
-        raise RuntimeError("OneBot 未连接，无法读取 QQ 收藏表情")
-    bot = next(iter(bots.values()))
-    take = max(1, min(100, int(count or 10)))
-    start = max(0, int(start or 0))
-    urls = await bot.call_api("fetch_custom_face", count=min(100, start + take))
-    if isinstance(urls, dict):
-        urls = urls.get("urls") or urls.get("data") or []
-    urls = list(urls or [])[start : start + take]
-    if not urls:
-        raise RuntimeError("QQ 收藏表情为空")
-
-    cfg = _cfg()
-    max_bytes = int(cfg.get("persona_max_bytes", 12 * 1024 * 1024) or 0)
-    result = {"added": 0, "promoted": 0, "skipped": 0, "total": len(urls)}
-    for index, url in enumerate(urls):
-        got = await _download(
-            str(url), max_bytes=max_bytes, min_bytes=1024, timeout=60.0
-        )
-        if got is None:
-            result["skipped"] += 1
-            continue
-        data, mime = got
-        digest = hashlib.sha256(data).hexdigest()
-        ext = _EXT_BY_MIME.get(mime, ".img")
-        path = PERSONA_DIR / f"{digest}{ext}"
-        try:
-            if not path.exists():
-                path.write_bytes(data)
-        except OSError:
-            result["skipped"] += 1
-            continue
-        rel = path.relative_to(STICKER_DIR).as_posix()
-
-        slot = {}
-        if slots and index < len(slots):
-            slot = slots[index] or {}
-        elif start == 0 and index < len(_PERSONA_SLOTS):
-            slot = _PERSONA_SLOTS[index]
-        tags = ",".join(str(t).strip() for t in (slot.get("tags") or []) if str(t).strip())
-        mood = str(slot.get("mood") or "").strip()
-        sort_order = start + index
-
-        new_id = db.add_sticker(
-            sha256=digest,
-            file_path=rel,
-            mime=mime,
-            size=len(data),
-            source="persona",
-            summary="QQ 收藏同步",
-            tags=tags,
-            mood=mood,
-            approved=True,
-            enabled=True,
-            persona=True,
-            sort_order=sort_order,
-        )
-        if new_id:
-            result["added"] += 1
-            continue
-
-        existing = db.get_sticker_by_sha(digest)
-        if existing is None:
-            result["skipped"] += 1
-            continue
-        db.update_sticker(
-            int(existing["id"]),
-            {
-                "file_path": rel,
-                "source": "persona",
-                "persona": True,
-                "approved": True,
-                "enabled": True,
-                "sort_order": sort_order,
-                "tags": tags or existing.get("tags") or "",
-                "mood": mood or existing.get("mood") or "",
-            },
-        )
-        result["promoted"] += 1
-    logger.info(f"stickers: 从 QQ 收藏同步人设表情 {result}")
-    return result
-
-
 def seed_persona(force: bool = False) -> dict[str, int]:
     """把仓库里的默认人设图复制进 data 并入库（幂等）。
 
@@ -632,7 +522,6 @@ def seed_persona(force: bool = False) -> dict[str, int]:
     ensure_dirs()
     result = {"added": 0, "existing": 0, "missing": 0}
     if not PERSONA_MANIFEST.is_file():
-        # 默认路径是从 QQ 收藏同步；清单只是可选的离线种子
         logger.debug(f"stickers: 没有人设清单 {PERSONA_MANIFEST}，跳过离线种子")
         return result
     try:
@@ -721,25 +610,6 @@ def seed_persona(force: bool = False) -> dict[str, int]:
     return result
 
 
-async def _auto_sync_persona() -> None:
-    """首次运行且库里没有人设图时，等 OneBot 连上后自动抓 QQ 收藏前 N 张。"""
-    if not _cfg().get("auto_sync_persona", True):
-        return
-    count = max(1, int(_cfg().get("persona_sync_count", 10) or 10))
-    if db.persona_sticker_count() >= count:
-        return
-    for _ in range(18):  # 最多等约 3 分钟，登录慢也不阻塞启动
-        try:
-            result = await sync_custom_faces(count)
-            if result.get("total", 0) < count:
-                return  # 收藏本来就不够 10 张，重试也没用
-            if result.get("added") or result.get("promoted"):
-                return
-        except Exception as exc:  # noqa: BLE001 —— 未连接/未登录是正常情况
-            logger.debug(f"stickers: 自动同步人设图暂不可用：{type(exc).__name__}: {exc}")
-        await asyncio.sleep(10)
-
-
 try:
     _driver = get_driver()
 
@@ -750,9 +620,6 @@ try:
             seeded = seed_persona()
             if seeded["added"] or seeded["missing"]:
                 logger.info(f"stickers: 默认人设图初始化 {seeded}")
-            task = asyncio.create_task(_auto_sync_persona())
-            _tasks.add(task)
-            task.add_done_callback(_tasks.discard)
         except Exception as exc:  # noqa: BLE001 —— 种子失败不该阻止机器人启动
             logger.warning(f"stickers: 初始化默认表情失败：{type(exc).__name__}: {exc}")
 

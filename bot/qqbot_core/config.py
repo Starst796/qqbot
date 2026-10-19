@@ -210,11 +210,6 @@ DEFAULTS: dict[str, Any] = {
         "min_bytes": 4096,
         # QQ 群里的动图表情常见 2~5MB，学习上限放宽到 8MB
         "max_bytes": 8 * 1024 * 1024,
-        # 默认人设图直接取 QQ 收藏表情的前 N 张；首次启动/面板按钮会本地化
-        "auto_sync_persona": True,
-        "persona_sync_count": 10,
-        # QQ 收藏里的动图可能到 7~8MB，单独放宽上限
-        "persona_max_bytes": 12 * 1024 * 1024,
         "learn": {
             "enabled": True,
             # true = 连普通图片也学（容易把照片收进表情库），默认只学“像表情”的图
