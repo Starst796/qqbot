@@ -73,7 +73,7 @@ DEFAULTS: dict[str, Any] = {
         "require_at_in_group": True,  # mode=at 时生效：群里必须 @ 机器人
         "prefixes": [],               # 额外前缀触发（可空）
         "reply_private": True,        # 私聊是否直接回
-        "aliases": [],                # 机器人昵称/别名，供接话判定参考
+        "aliases": ["大肥鱼", "肥鱼"],  # 机器人昵称/别名，供接话判定参考
         # mode=semantic 时的判定参数：每条群消息一次极小的模型调用，成本随群活跃度上升
         "semantic": {
             # 判定时附带的群内最近消息条数。大群刷得快，条数太少判定看不到话题脉络

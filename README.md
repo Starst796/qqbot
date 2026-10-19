@@ -9,6 +9,7 @@
 - **读图**：消息里的图片下载后内联给模型（`deepseek-flash` 支持图片输入）；
 - **风格注入**：全量落库群消息 → embedding 语义检索 / **接话对蒸馏** → 作为 few-shot 学习群体语气；
 - **学习型复读**：连续相同跟读 + 从群聊里学「前句→接话」按概率复述（不调用模型）；
+- **表情包**：默认人设图从 QQ 收藏前 10 张本地化；群友表情自动学习/去重/待审核；可被模型调用发送，也会接图；
 - **@ 触发 + 三层限流**，避免刷屏与烧额度；
 - 自带**管理面板**（`https://qq.example.com`，nginx + BasicAuth），可在线调参。
 
@@ -28,7 +29,7 @@ qqbot/
 │   ├── pyproject.toml
 │   ├── requirements.txt      # 供部署钩子增量安装
 │   ├── .env.example          # 环境变量模板（复制为 .env 填密钥）
-│   ├── qqbot_core/           # 共享核心：config / db / embeddings / media / keywords / llm
+│   ├── qqbot_core/           # 共享核心：config / db / embeddings / media / keywords / llm / stickers
 │   └── plugins/
 │       ├── msg_store/        # 全量落库群消息（图片折算为占位符）
 │       ├── rag/              # embedding 语义检索 + 后台向量化
@@ -59,6 +60,7 @@ qqbot/
 | `data/config.json` | 可热改配置（面板读写） |
 | `data/qqbot.db` | 消息、向量、会话、复读学习表、接话对（SQLite WAL） |
 | `data/hf/` | embedding 模型缓存（HF_HOME） |
+| `data/stickers/` | 表情包文件（persona / learned / upload；SQLite 只存索引） |
 | `napcat/data/` | QQ 登录态与 NapCat 配置（**切勿删除**） |
 | `bot/.env` | 密钥（DeepSeek Key、OneBot token） |
 
@@ -131,6 +133,22 @@ qqbot/
 - `max_images` / `max_mb` / `timeout_sec` 限制张数、单张大小与下载超时，读取失败的单张跳过；
 - 模型必须支持图片输入，所以 `model` 要用 `deepseek-flash`（`deepseek-v4-pro` 是纯文本）；
 - 服务器没装 `Pillow`：图片只做大小/类型校验，不做缩放或转码。
+
+**表情包（`stickers`）**
+
+- **默认十张**：启动时若库里还没有人设图，会自动调用 OneBot `fetch_custom_face`，
+  把 QQ 收藏表情的**前 10 张**下载到 `data/stickers/persona/`，标记 `persona=1`；
+  面板「表情包」页也有同步按钮。文件在 `data/` 里，重启不丢，永远排在候选最前。
+- **学习**：群消息里的 `image`（`sub_type=1` 或 summary 含“表情/贴纸”）会异步下载，
+  按 SHA-256 去重，默认 `approved=0` 待审核；超过体积/速率上限自动跳过。
+  `mface` 没有可下载 URL 时目前直接跳过（跨账号回放也不稳定）。
+- **发送**：被 @ 时模型可调用 `send_sticker(mood=...)`；文字回复后按 `send_probability`
+  附带；收到纯表情时按 `react_to_sticker_probability` 接图。三条路径共用同群冷却与
+  每 10 分钟上限。
+- **为什么用 base64**：NapCat 在 Docker 容器里读不到宿主机的 `data/stickers/`，
+  所以发送时把文件读成字节内联成 base64，而不是传本地路径。
+- **面板**：列表/筛选/上传/批准/停用/改标签/删除/从 QQ 收藏同步；
+  配置项在「表情包设置」里，保存即热生效。
 
 **群功能开关（`groups`）**
 
