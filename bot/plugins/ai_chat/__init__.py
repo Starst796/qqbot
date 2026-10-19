@@ -32,10 +32,11 @@ from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
     MessageEvent,
+    MessageSegment,
     PrivateMessageEvent,
 )
 
-from qqbot_core import activity, config, db, tools
+from qqbot_core import activity, config, db, stickers, tools
 from qqbot_core.media import fetch_data_uri, image_sources, placeholders
 
 driver = get_driver()
@@ -254,6 +255,10 @@ async def _complete(messages: list[dict], cfg: dict) -> str:
 # 当前轮所在群。工具 handler 只收 args，群号这类「上下文」用 ContextVar 传，
 # 免得把群号塞进工具参数里让模型去猜。
 _current_group: contextvars.ContextVar[str] = contextvars.ContextVar("qqbot_group", default="")
+# send_sticker 工具只“预订”一张图，真正发送在 _reply 里统一做（要复用拟人化延迟）
+_pending_sticker: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "qqbot_pending_sticker", default=None
+)
 
 
 def _tools_cfg() -> dict:
@@ -268,6 +273,15 @@ def _tools_enabled_for(event: MessageEvent) -> bool:
     if cfg.get("only_when_addressed", True) and not _addressed(event):
         return False
     return bool(tools.all_tools())
+
+
+def _sticker_tools_available() -> bool:
+    cfg = config.get("stickers", {}) or {}
+    return bool(
+        cfg.get("enabled", True)
+        and cfg.get("tool_enabled", True)
+        and _tools_cfg().get("enabled", True)
+    )
 
 
 def _parse_args(raw: Any) -> dict:
@@ -435,6 +449,65 @@ def register_tools() -> None:
                 "历史",
                 "翻一下",
             ),
+            read_only=True,
+            source="ai_chat",
+        )
+    )
+
+    async def _send_sticker(args: dict) -> str:
+        group_id = _current_group.get() or None
+        if not _sticker_tools_available():
+            return json.dumps(
+                {"ok": False, "hint": "表情包功能没开，直接说话就好。"},
+                ensure_ascii=False,
+            )
+        if _pending_sticker.get() is not None:
+            return json.dumps(
+                {"ok": True, "hint": "这一轮已经选好一张了，不要重复发。"},
+                ensure_ascii=False,
+            )
+        if not stickers.can_send(group_id):
+            return json.dumps(
+                {"ok": False, "hint": "现在不适合发表情，直接说话就好。"},
+                ensure_ascii=False,
+            )
+
+        mood = str(args.get("mood") or "").strip()
+        row = stickers.select_sticker(mood or None, group_id=group_id)
+        if row is None:
+            return json.dumps(
+                {"ok": False, "hint": "没有可用的表情，直接说话，不要硬发。"},
+                ensure_ascii=False,
+            )
+        _pending_sticker.set(int(row["id"]))
+        return json.dumps(
+            {
+                "ok": True,
+                "mood": row.get("mood") or mood or "随缘",
+                "note": "会在文字回复之后发出去",
+            },
+            ensure_ascii=False,
+        )
+
+    tools.register(
+        tools.Tool(
+            name="send_sticker",
+            description=(
+                "发一张表情包来表达情绪。mood 可选：招呼、嫌弃、无语、疑惑、得意、"
+                "喝茶、生气、委屈、开心、告辞；不确定就留空。不要每句话都发，"
+                "也不要连续发；文字已经能说清时就不用它。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "mood": {
+                        "type": "string",
+                        "description": "想表达的情绪；留空则由后端随机挑一张",
+                    }
+                },
+            },
+            handler=_send_sticker,
+            visibility="visible",
             read_only=True,
             source="ai_chat",
         )
@@ -626,6 +699,9 @@ async def _build_messages(
     if (cfg.get("humanize", {}) or {}).get("style_hint", True):
         system += _FORMAT_HINT
 
+    if _sticker_tools_available() and _tools_enabled_for(event):
+        system += _STICKER_HINT
+
     messages: list[dict] = [{"role": "system", "content": system}]
     turns = int((cfg.get("style", {}) or {}).get("context_turns", 6))
     messages.extend(db.get_session(_conv_key(event), turns))
@@ -653,6 +729,13 @@ _FORMAT_HINT = (
     "完全不像群里随手打字；两句之间空一行是最出戏的写法。\n"
     "- 不要用「-」「1.」这类列表符号，不要 markdown，"
     "也不要在句尾写「(1/2)」这种续行提示。"
+)
+
+
+_STICKER_HINT = (
+    "\n\n【表情包】\n"
+    "- 想表达情绪时可以调用 send_sticker(mood=...)，后端会挑一张合适的发在你这条回复后面。\n"
+    "- 不要每句都发、不要连续发；文字已经说清楚时就不用。"
 )
 
 
@@ -771,11 +854,17 @@ def _chunk_gap_range(human: dict) -> tuple[float, float]:
     return (low, high) if low <= high else (high, low)
 
 
-async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
+async def _reply(
+    bot: Bot,
+    event: MessageEvent,
+    text: str,
+    sticker_row: dict[str, Any] | None = None,
+) -> None:
     """发出回复。
 
     两种延迟：首条之前等 `min_delay_ms`~`max_delay_ms`（**只等一次**），
     之后每条之间等 `chunk_gap_ms_min`~`chunk_gap_ms_max`。
+    表情包在文字之后单独发一条，共用同一套间隔与发言标记。
     """
     human = config.get("humanize", {}) or {}
     delay = random.uniform(
@@ -793,6 +882,16 @@ async def _reply(bot: Bot, event: MessageEvent, text: str) -> None:
         if i:
             await asyncio.sleep(random.uniform(gap_low, gap_high))
         await matcher.send(chunk)
+
+    if sticker_row is not None:
+        path = stickers.resolve_path(sticker_row)
+        if path is not None and stickers.can_send(group_id):
+            try:
+                await asyncio.sleep(random.uniform(gap_low, gap_high))
+                await matcher.send(MessageSegment.image(str(path)))
+                stickers.mark_sent(int(sticker_row["id"]), group_id)
+            except Exception as exc:  # noqa: BLE001 —— 发图失败不该影响已发出的文字
+                logger.warning(f"ai_chat: 发表情失败：{type(exc).__name__}: {exc}")
 
 
 @matcher.handle()
@@ -835,29 +934,52 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         if not question and not images:
             return
         messages = await _build_messages(event, question, images)
+        pending_id: int | None = None
+        sticker_row: dict[str, Any] | None = None
         try:
             if _tools_enabled_for(event):
                 token = _current_group.set(group_id or "")
+                sticker_token = _pending_sticker.set(None)
                 try:
                     answer = await _tool_loop(messages, cfg, question)
+                    pending_id = _pending_sticker.get()
                 finally:
+                    _pending_sticker.reset(sticker_token)
                     _current_group.reset(token)
             else:
                 answer = await _complete(messages, cfg)
         except Exception as exc:  # noqa: BLE001 —— 模型侧任何错误都不该让机器人崩
             logger.warning(f"ai_chat: 调用模型失败：{type(exc).__name__}: {exc}")
             return
-        if not answer:
+        if not answer and pending_id is None:
             return
+
+        if pending_id is not None:
+            sticker_row = db.get_sticker(pending_id)
+        if sticker_row is None and answer and group_id:
+            # 没走工具时按概率附带一张；表情只是语气，不该抢文字的位置
+            s_cfg = cfg.get("stickers", {}) or {}
+            probability = float(s_cfg.get("send_probability", 0.12) or 0)
+            if (
+                probability > 0
+                and random.random() < probability
+                and stickers.can_send(group_id)
+            ):
+                sticker_row = stickers.select_sticker(
+                    stickers.mood_from_text(answer), group_id=group_id
+                )
 
         # 上下文里给图片留个占位，免得下一轮看起来像是凭空冒出一句话
         recorded = " ".join(part for part in (question, placeholders(event.message)) if part)
         db.add_session(_conv_key(event), "user", f"{_display_name(event)}: {recorded}")
-        db.add_session(_conv_key(event), "assistant", answer)
+        if answer:
+            db.add_session(_conv_key(event), "assistant", answer)
+        elif sticker_row is not None:
+            db.add_session(_conv_key(event), "assistant", "[表情]")
     finally:
         # 名额只统计「准备 + 调模型」。下面那段发送（拟人化延迟 + 分条间隔，可能好几秒）
         # 不该占着并发闸 —— 否则同时 3 个人问到长回复，第 4 个会被丢掉，
         # 而其实模型早就答完了，只是在慢慢发消息。
         await _limiter.release()
 
-    await _reply(bot, event, answer)
+    await _reply(bot, event, answer or "", sticker_row)

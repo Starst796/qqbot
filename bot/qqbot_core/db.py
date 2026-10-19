@@ -80,6 +80,41 @@ CREATE TABLE IF NOT EXISTS style_pairs (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_style_pairs_group ON style_pairs(group_id);
+
+-- 表情包库：persona=默认人设图（永远排最前）；approved=0 为待审核的学习图
+CREATE TABLE IF NOT EXISTS stickers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha256       TEXT NOT NULL UNIQUE,
+    file_path    TEXT NOT NULL,
+    mime         TEXT NOT NULL DEFAULT 'image/png',
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    source       TEXT NOT NULL DEFAULT 'learned',
+    group_id     TEXT,
+    user_id      TEXT,
+    mface_id     TEXT,
+    summary      TEXT,
+    tags         TEXT NOT NULL DEFAULT '',
+    mood         TEXT,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    approved     INTEGER NOT NULL DEFAULT 0,
+    persona      INTEGER NOT NULL DEFAULT 0,
+    sort_order   INTEGER NOT NULL DEFAULT 1000,
+    weight       REAL NOT NULL DEFAULT 1.0,
+    seen_count   INTEGER NOT NULL DEFAULT 1,
+    use_count    INTEGER NOT NULL DEFAULT 0,
+    last_used_at REAL,
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stickers_pick ON stickers(enabled, approved, persona, sort_order);
+
+-- 发送记录：用于同群冷却、近期去重与使用统计
+CREATE TABLE IF NOT EXISTS sticker_usage (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    sticker_id INTEGER NOT NULL,
+    group_id   TEXT,
+    ts         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sticker_usage_group ON sticker_usage(group_id, ts);
 """
 
 # FTS5 是 embedding 不可用时的降级检索方案。trigram 需 SQLite >= 3.34，
@@ -448,6 +483,283 @@ def style_pair_stats() -> dict[str, int]:
     return {r["group_id"]: int(r["pairs"]) for r in rows}
 
 
+# --------------------------------------------------------------------------- #
+# 表情包库（供 qqbot_core.stickers 与管理面板使用）
+# --------------------------------------------------------------------------- #
+def add_sticker(
+    *,
+    sha256: str,
+    file_path: str,
+    mime: str,
+    size: int,
+    source: str,
+    group_id: str | None = None,
+    user_id: str | None = None,
+    mface_id: str | None = None,
+    summary: str | None = None,
+    tags: str = "",
+    mood: str | None = None,
+    approved: bool = False,
+    enabled: bool = True,
+    persona: bool = False,
+    sort_order: int = 1000,
+    weight: float = 1.0,
+) -> int | None:
+    """新增一张表情；sha256 已存在时只增加 seen_count 并返回 None。"""
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT id FROM stickers WHERE sha256 = ?", (sha256,)
+        ).fetchone()
+        if row is not None:
+            conn.execute(
+                "UPDATE stickers SET seen_count = seen_count + 1 WHERE id = ?",
+                (row["id"],),
+            )
+            conn.commit()
+            return None
+        cur = conn.execute(
+            "INSERT INTO stickers("
+            "sha256, file_path, mime, bytes, source, group_id, user_id, mface_id, "
+            "summary, tags, mood, enabled, approved, persona, sort_order, weight, created_at"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                sha256,
+                file_path,
+                mime,
+                int(size),
+                source,
+                group_id,
+                user_id,
+                mface_id,
+                summary,
+                tags,
+                mood,
+                1 if enabled else 0,
+                1 if approved else 0,
+                1 if persona else 0,
+                int(sort_order),
+                float(weight),
+                time.time(),
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or -1)
+
+
+def get_sticker(sticker_id: int) -> dict[str, Any] | None:
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM stickers WHERE id = ?", (int(sticker_id),)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_sticker_by_sha(sha256: str) -> dict[str, Any] | None:
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM stickers WHERE sha256 = ?", (sha256,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_stickers(
+    *,
+    page: int = 1,
+    page_size: int = 24,
+    status: str = "all",
+    source: str = "",
+    q: str = "",
+) -> dict[str, Any]:
+    """分页列出表情包。persona 永远排最前，其次按 sort_order/时间。"""
+    page = max(1, int(page or 1))
+    page_size = min(100, max(1, int(page_size or 24)))
+    where: list[str] = []
+    params: list[Any] = []
+
+    status = (status or "all").strip()
+    if status == "pending":
+        where.append("approved = 0")
+    elif status == "enabled":
+        where.append("enabled = 1")
+    elif status == "disabled":
+        where.append("enabled = 0")
+    elif status == "persona":
+        where.append("persona = 1")
+    elif status == "learned":
+        where.append("source = 'learned'")
+    elif status == "upload":
+        where.append("source = 'upload'")
+
+    if source.strip():
+        where.append("source = ?")
+        params.append(source.strip())
+
+    keyword = (q or "").strip()
+    if keyword:
+        like = f"%{keyword}%"
+        where.append(
+            "(tags LIKE ? OR mood LIKE ? OR summary LIKE ? OR source LIKE ?)"
+        )
+        params.extend([like, like, like, like])
+
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    conn = connect()
+    with _lock:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM stickers {clause}", params
+        ).fetchone()["c"]
+        rows = conn.execute(
+            "SELECT * FROM stickers "
+            f"{clause} "
+            "ORDER BY persona DESC, sort_order ASC, created_at DESC, id DESC "
+            "LIMIT ? OFFSET ?",
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+    return {
+        "items": [dict(r) for r in rows],
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def update_sticker(sticker_id: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+    """更新面板可编辑字段；未知字段忽略。"""
+    allowed = {
+        "tags",
+        "mood",
+        "enabled",
+        "approved",
+        "persona",
+        "sort_order",
+        "weight",
+        "summary",
+        "file_path",
+        "source",
+    }
+    sets: list[str] = []
+    params: list[Any] = []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        if key in {"enabled", "approved", "persona"}:
+            value = 1 if value else 0
+        elif key == "sort_order":
+            value = int(value)
+        elif key == "weight":
+            value = max(0.0, float(value))
+        else:
+            value = str(value or "")
+        sets.append(f"{key} = ?")
+        params.append(value)
+    if sets:
+        conn = connect()
+        with _lock:
+            conn.execute(
+                f"UPDATE stickers SET {', '.join(sets)} WHERE id = ?",
+                (*params, int(sticker_id)),
+            )
+            conn.commit()
+    return get_sticker(sticker_id)
+
+
+def delete_sticker(sticker_id: int) -> dict[str, Any] | None:
+    """删除记录及发送历史；文件由调用方负责删除。返回被删行。"""
+    row = get_sticker(sticker_id)
+    if row is None:
+        return None
+    conn = connect()
+    with _lock:
+        conn.execute("DELETE FROM sticker_usage WHERE sticker_id = ?", (int(sticker_id),))
+        conn.execute("DELETE FROM stickers WHERE id = ?", (int(sticker_id),))
+        conn.commit()
+    return row
+
+
+def sticker_candidates(mood: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    """候选表情：已启用且已审核；mood 命中主情绪或标签。"""
+    conn = connect()
+    where = ["enabled = 1", "approved = 1"]
+    params: list[Any] = []
+    mood = (mood or "").strip()
+    if mood:
+        where.append("(mood = ? OR tags LIKE ?)")
+        params.extend([mood, f"%{mood}%"])
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM stickers WHERE "
+            + " AND ".join(where)
+            + " ORDER BY persona DESC, sort_order ASC, id DESC LIMIT ?",
+            (*params, max(1, int(limit))),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_sticker_use(sticker_id: int, group_id: str | None) -> None:
+    conn = connect()
+    now = time.time()
+    with _lock:
+        conn.execute(
+            "UPDATE stickers SET use_count = use_count + 1, last_used_at = ? "
+            "WHERE id = ?",
+            (now, int(sticker_id)),
+        )
+        conn.execute(
+            "INSERT INTO sticker_usage(sticker_id, group_id, ts) VALUES (?,?,?)",
+            (int(sticker_id), group_id, now),
+        )
+        conn.commit()
+
+
+def sticker_usage_count(group_id: str | None, since: float) -> int:
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM sticker_usage "
+            "WHERE group_id IS ? AND ts >= ?",
+            (group_id, float(since)),
+        ).fetchone()
+    return int(row["c"])
+
+
+def recent_sticker_ids(group_id: str | None, since: float) -> set[int]:
+    conn = connect()
+    with _lock:
+        rows = conn.execute(
+            "SELECT DISTINCT sticker_id FROM sticker_usage "
+            "WHERE group_id IS ? AND ts >= ?",
+            (group_id, float(since)),
+        ).fetchall()
+    return {int(r["sticker_id"]) for r in rows}
+
+
+def sticker_stats() -> dict[str, int]:
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(persona = 1), 0) AS persona, "
+            "COALESCE(SUM(source = 'learned'), 0) AS learned, "
+            "COALESCE(SUM(approved = 0), 0) AS pending, "
+            "COALESCE(SUM(enabled = 0), 0) AS disabled, "
+            "COALESCE(SUM(use_count), 0) AS uses "
+            "FROM stickers"
+        ).fetchone()
+    return {k: int(row[k] or 0) for k in row.keys()}
+
+
+def persona_sticker_count() -> int:
+    conn = connect()
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM stickers WHERE persona = 1"
+        ).fetchone()
+    return int(row["c"])
+
+
 def stats() -> dict[str, Any]:
     conn = connect()
     with _lock:
@@ -461,6 +773,7 @@ def stats() -> dict[str, Any]:
         last = conn.execute("SELECT MAX(ts) AS t FROM messages").fetchone()["t"]
         learned = conn.execute("SELECT COUNT(*) AS c FROM repeat_learn").fetchone()["c"]
         pairs = conn.execute("SELECT COUNT(*) AS c FROM style_pairs").fetchone()["c"]
+        stickers = conn.execute("SELECT COUNT(*) AS c FROM stickers").fetchone()["c"]
     return {
         "messages": int(total),
         "vectors": int(embedded),
@@ -468,6 +781,7 @@ def stats() -> dict[str, Any]:
         "last_message_ts": float(last) if last else None,
         "repeat_entries": int(learned),
         "style_pairs": int(pairs),
+        "stickers": int(stickers),
         "db_path": str(DB_PATH),
     }
 

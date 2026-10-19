@@ -30,9 +30,13 @@ import time
 from collections import deque
 
 from nonebot import logger, on_message
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
+from nonebot.adapters.onebot.v11 import (
+    GroupMessageEvent,
+    MessageEvent,
+    MessageSegment,
+)
 
-from qqbot_core import activity, config, db
+from qqbot_core import activity, config, db, stickers
 from qqbot_core.keywords import extract_keywords
 
 matcher = on_message(priority=50, block=False)
@@ -232,6 +236,43 @@ async def _pairs_reply(group_id: str, text: str, cfg: dict) -> str | None:
     return None
 
 
+def _has_sticker(event: MessageEvent) -> bool:
+    for seg in getattr(event, "message", None) or ():
+        if str(getattr(seg, "type", "") or "") in {"image", "mface"}:
+            return True
+    return False
+
+
+async def _maybe_sticker_reply(event: MessageEvent, group_id: str, cfg: dict) -> bool:
+    """收到纯表情消息时，按概率回一张同库表情。
+
+    这是最自然的“接图”场景：对方发图，文字路径本来就没内容可复读。
+    """
+    if not _has_sticker(event):
+        return False
+    s_cfg = config.get("stickers", {}) or {}
+    probability = float(s_cfg.get("react_to_sticker_probability", 0.06) or 0)
+    if probability <= 0 or random.random() >= probability:
+        return False
+    if not _may_open(group_id, cfg) or not stickers.can_send(group_id):
+        return False
+    row = stickers.select_sticker(None, group_id=group_id)
+    path = stickers.resolve_path(row) if row is not None else None
+    if row is None or path is None:
+        return False
+
+    _group_last_sent[group_id] = time.monotonic()
+    activity.mark_spoken(group_id)
+    logger.info(f"repeater: 接图 群{group_id}")
+    try:
+        await matcher.send(MessageSegment.image(str(path)))
+    except Exception as exc:  # noqa: BLE001 —— 发图失败不影响其他路径
+        logger.warning(f"repeater: 接图失败：{type(exc).__name__}: {exc}")
+        return False
+    stickers.mark_sent(int(row["id"]), group_id)
+    return True
+
+
 async def _send(group_id: str, text: str, cfg: dict, reason: str) -> bool:
     # 复读永远只发一条：把学到句子里的换行/连续空白压平，免得也变成多行气泡
     text = " ".join(str(text or "").split())
@@ -274,11 +315,13 @@ async def _handle(event: MessageEvent) -> None:
     if event.is_tome():
         return  # 被点名时交给 ai_chat
 
+    group_id = str(event.group_id)
     text = event.get_plaintext().strip()
     if not text or _blocked(text, cfg):
+        if not text:
+            await _maybe_sticker_reply(event, group_id, cfg)
         return
 
-    group_id = str(event.group_id)
     # 先决定要不要开口、再学习——否则本条会被学进它自己刚查询的那个桶
     decision = _decide(group_id, text, cfg)
     if cfg.get("learn_enabled", True):

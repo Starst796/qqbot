@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -27,10 +28,10 @@ from typing import Any
 # 若在函数内部才 import，注解里的 Request/HTMLResponse 会解析失败，
 # 导致 request 被当成查询参数 → POST 一律 422。
 from fastapi import Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from nonebot import get_bots, get_driver, logger
 
-from qqbot_core import config, db
+from qqbot_core import config, db, stickers
 
 driver = get_driver()
 
@@ -295,6 +296,147 @@ def _register(app) -> None:
     @app.get("/api/stats")
     async def _stats():
         return _json({"ok": True, "stats": db.stats()})
+
+    # ---- 表情包管理 ----
+    @app.get("/api/stickers")
+    async def _stickers_list(
+        page: int = 1,
+        page_size: int = 24,
+        status: str = "all",
+        source: str = "",
+        q: str = "",
+    ):
+        data = db.list_stickers(
+            page=page, page_size=page_size, status=status, source=source, q=q
+        )
+        return _json(
+            {"ok": True, **data, "stats": db.sticker_stats()}
+        )
+
+    @app.get("/api/stickers/stats")
+    async def _stickers_stats():
+        return _json({"ok": True, "stats": db.sticker_stats()})
+
+    @app.post("/api/stickers/upload")
+    async def _stickers_upload(request: Request):
+        """用 JSON base64 上传，避免引入 python-multipart 依赖。"""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _json({"ok": False, "error": "请求体不是合法 JSON"}, status=400)
+        files = body.get("files") if isinstance(body, dict) else None
+        if files is None and isinstance(body, dict) and body.get("data"):
+            files = [body]
+        if not isinstance(files, list) or not files:
+            return _json({"ok": False, "error": "没有收到文件"}, status=400)
+
+        saved: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for item in files[:30]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            raw_b64 = str(item.get("data") or "")
+            try:
+                raw = base64.b64decode(raw_b64, validate=True)
+                row = stickers.save_upload(raw, name)
+                if row is not None:
+                    saved.append(row)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name or '未命名'}：{exc}")
+        logger.info(f"admin_panel: 上传表情 {len(saved)} 张，失败 {len(errors)} 张")
+        return _json({"ok": bool(saved), "saved": saved, "errors": errors})
+
+    @app.post("/api/stickers/batch")
+    async def _stickers_batch(request: Request):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _json({"ok": False, "error": "请求体不是合法 JSON"}, status=400)
+        if not isinstance(body, dict):
+            return _json({"ok": False, "error": "参数必须是对象"}, status=400)
+        action = str(body.get("action") or "")
+        ids = [int(x) for x in (body.get("ids") or []) if str(x).isdigit()]
+        if not ids:
+            return _json({"ok": False, "error": "没有选择表情"}, status=400)
+
+        changed = 0
+        for sticker_id in ids:
+            row = db.get_sticker(sticker_id)
+            if row is None:
+                continue
+            if action == "delete":
+                stickers.remove_file(row)
+                db.delete_sticker(sticker_id)
+            elif action == "approve":
+                db.update_sticker(sticker_id, {"approved": True, "enabled": True})
+            elif action == "enable":
+                db.update_sticker(sticker_id, {"enabled": True})
+            elif action == "disable":
+                db.update_sticker(sticker_id, {"enabled": False})
+            else:
+                return _json({"ok": False, "error": f"未知操作：{action}"}, status=400)
+            changed += 1
+        return _json({"ok": True, "changed": changed})
+
+    @app.post("/api/stickers/sync-persona")
+    async def _stickers_sync_persona(request: Request):
+        """把 QQ 收藏表情的前 N 张本地化成人设图（默认 10 张）。"""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        count = int(body.get("count") or config.get("stickers.persona_sync_count", 10))
+        start = int(body.get("start") or 0)
+        slots = body.get("slots") if isinstance(body.get("slots"), list) else None
+        try:
+            result = await asyncio.wait_for(
+                stickers.sync_custom_faces(count=count, start=start, slots=slots),
+                timeout=180,
+            )
+        except asyncio.TimeoutError:
+            return _json({"ok": False, "error": "同步超时，稍后重试"}, status=504)
+        except Exception as exc:  # noqa: BLE001
+            return _json(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=409
+            )
+        return _json({"ok": True, **result})
+
+    @app.get("/api/stickers/{sticker_id}/file")
+    async def _sticker_file(sticker_id: int):
+        row = db.get_sticker(sticker_id)
+        path = stickers.resolve_path(row) if row is not None else None
+        if row is None or path is None:
+            return _json({"ok": False, "error": "文件不存在"}, status=404)
+        return FileResponse(
+            path,
+            media_type=str(row.get("mime") or "application/octet-stream"),
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    @app.post("/api/stickers/{sticker_id}/update")
+    async def _sticker_update(sticker_id: int, request: Request):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _json({"ok": False, "error": "请求体不是合法 JSON"}, status=400)
+        if not isinstance(body, dict):
+            return _json({"ok": False, "error": "参数必须是对象"}, status=400)
+        row = db.update_sticker(sticker_id, body)
+        if row is None:
+            return _json({"ok": False, "error": "表情不存在"}, status=404)
+        return _json({"ok": True, "sticker": row})
+
+    @app.post("/api/stickers/{sticker_id}/delete")
+    async def _sticker_delete(sticker_id: int):
+        row = db.get_sticker(sticker_id)
+        if row is None:
+            return _json({"ok": False, "error": "表情不存在"}, status=404)
+        stickers.remove_file(row)
+        db.delete_sticker(sticker_id)
+        return _json({"ok": True})
 
     @app.post("/api/reload")
     async def _reload():

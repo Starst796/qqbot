@@ -12,7 +12,7 @@ from __future__ import annotations
 from nonebot import on_message
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 
-from qqbot_core import config, db
+from qqbot_core import config, db, stickers
 from qqbot_core.media import placeholders
 
 matcher = on_message(priority=100, block=False)
@@ -47,7 +47,7 @@ async def _store(event: MessageEvent) -> None:
     if sender is not None:
         nickname = getattr(sender, "card", None) or getattr(sender, "nickname", None)
 
-    db.add_message(
+    msg_id = db.add_message(
         user_id=str(event.user_id),
         content=content,
         group_id=group_id,
@@ -55,3 +55,6 @@ async def _store(event: MessageEvent) -> None:
         is_bot=is_bot,
         embeddable=bool(text),
     )
+    if msg_id > 0 and not is_bot:
+        # 表情学习是异步的，不阻塞消息落库/向量化
+        stickers.observe_message(event, msg_id)

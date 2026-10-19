@@ -60,6 +60,12 @@
   .msg .txt { flex:1; word-break:break-all; }
   .msg .t { color:var(--mut); white-space:nowrap; font-size:12px; }
   .logbox { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:10px; max-height:170px; overflow:auto; font-size:12px; color:var(--mut); white-space:pre-wrap; word-break:break-all; margin:12px 0 0; }
+  .sticker-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; margin-top:12px; }
+  .sticker-card { background:#12171d; border:1px solid var(--line); border-radius:8px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .sticker-card img { width:100%; aspect-ratio:1/1; object-fit:contain; background:#0d1117; border-radius:6px; }
+  .sticker-card .meta { font-size:12px; color:var(--mut); word-break:break-all; }
+  .sticker-card .ops { display:flex; flex-wrap:wrap; gap:4px; }
+  .sticker-card .ops button { font-size:12px; padding:2px 6px; }
   #qrImg { width:200px; height:200px; background:#fff; border-radius:8px; padding:6px; display:block; }
 </style>
 </head>
@@ -73,6 +79,7 @@
   <button class="menu-item active" data-page="overview">总览</button>
   <button class="menu-item" data-page="chat">对话</button>
   <button class="menu-item" data-page="style">风格与复读</button>
+  <button class="menu-item" data-page="stickers">表情包</button>
   <button class="menu-item" data-page="data">群与数据</button>
 </nav>
 <main>
@@ -246,6 +253,56 @@
       从不参与「要不要说话」的决策，所以“命中接话对也不插话”是必然的。
       开启后用当前消息去接话对里做向量召回，命中就把当年那句接话发出去
       —— 发不发仍受下面的冷却、去重、屏蔽词约束。相似度下限调低会更话多。</p>
+  </section>
+
+  <section class="card" data-page="stickers">
+    <h2>表情包库</h2>
+    <div class="stats" id="stickerStats">—</div>
+    <div class="actions-inline">
+      <button class="ghost" id="btnStickerSync">从 QQ 收藏同步前 10 张</button>
+      <button class="ghost" id="btnStickerUpload">上传图片</button>
+      <input type="file" id="stickerUpload" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden />
+      <button class="ghost" id="btnStickerApprove">批准当前待审核</button>
+      <span class="hint2" id="stickerState"></span>
+    </div>
+    <p class="hint2">默认十张人设图从 QQ 收藏的前 10 张本地化而来，标记为 persona，永远排最前。
+      群友发的表情默认待审核，批准后才会进入候选；同图按内容去重。</p>
+    <div class="actions-inline" style="margin-top:12px">
+      <select id="stickerStatus">
+        <option value="all">全部</option>
+        <option value="persona">人设图</option>
+        <option value="pending">待审核</option>
+        <option value="learned">学习图</option>
+        <option value="upload">上传图</option>
+        <option value="disabled">已停用</option>
+      </select>
+      <input type="text" id="stickerQuery" placeholder="搜标签 / 情绪 / 来源" style="min-width:220px" />
+      <button class="ghost" id="btnStickerRefresh">刷新</button>
+    </div>
+    <div class="sticker-grid" id="stickerGrid"></div>
+    <div class="actions-inline" style="margin-top:12px">
+      <button class="ghost mini" id="stickerPrev">◀ 上一页</button>
+      <span class="hint2" id="stickerPage" style="margin:0"></span>
+      <button class="ghost mini" id="stickerNext">下一页 ▶</button>
+    </div>
+  </section>
+
+  <section class="card" data-page="stickers">
+    <h2>表情包设置</h2>
+    <div class="row"><label>启用表情包</label><input type="checkbox" id="stickers.enabled" /></div>
+    <div class="row"><label>被 @ 时启用 send_sticker 工具</label><input type="checkbox" id="stickers.tool_enabled" /></div>
+    <div class="row"><label>文字回复附带表情概率(0~1)</label><input type="number" id="stickers.send_probability" step="0.01" min="0" max="1" /></div>
+    <div class="row"><label>收到表情时回图概率(0~1)</label><input type="number" id="stickers.react_to_sticker_probability" step="0.01" min="0" max="1" /></div>
+    <div class="row"><label>人设图优先度(0~1)</label><input type="number" id="stickers.persona_priority" step="0.05" min="0" max="1" /></div>
+    <div class="row"><label>同群冷却(秒)</label><input type="number" id="stickers.cooldown_seconds" min="0" /></div>
+    <div class="row"><label>每群每 10 分钟上限</label><input type="number" id="stickers.max_per_group_per_10min" min="0" /></div>
+    <div class="row"><label>学习群友表情</label><input type="checkbox" id="stickers.learn.enabled" /></div>
+    <div class="row"><label>学习图自动批准</label><input type="checkbox" id="stickers.learn.auto_approve" /></div>
+    <div class="row"><label>自动批准所需出现次数</label><input type="number" id="stickers.learn.min_seen" min="1" /></div>
+    <div class="row"><label>学习下载每分钟上限</label><input type="number" id="stickers.learn.max_per_minute" min="0" /></div>
+    <div class="row"><label>普通图片也学习（不建议）</label><input type="checkbox" id="stickers.learn.all_images" /></div>
+    <div class="row"><label>首次启动自动同步人设图</label><input type="checkbox" id="stickers.auto_sync_persona" /></div>
+    <div class="row"><label>同步张数</label><input type="number" id="stickers.persona_sync_count" min="1" max="100" /></div>
   </section>
 
   <section class="card" data-page="data">
@@ -429,7 +486,8 @@ async function loadStats() {
     `<div><b>${s.vectors ?? 0}</b>向量</div>` +
     `<div><b>${s.groups ?? 0}</b>群</div>` +
     `<div><b>${s.repeat_entries ?? 0}</b>复读学习</div>` +
-    `<div><b>${s.style_pairs ?? 0}</b>接话对</div>`;
+    `<div><b>${s.style_pairs ?? 0}</b>接话对</div>` +
+    `<div><b>${s.stickers ?? 0}</b>表情</div>`;
 }
 
 async function save(reload) {
@@ -461,7 +519,7 @@ $("reload").onclick = () => save(true);
 // ---------------- 菜单分页 ----------------
 // 卡片在 DOM 里不搬家，只靠 data-page 属性控制显隐
 // （这样 fillForm/collectForm 遍历 [id] 依然能拿到全部隐藏页的字段）
-const PAGES = ["overview", "chat", "style", "data"];
+const PAGES = ["overview", "chat", "style", "stickers", "data"];
 
 function showPage(name) {
   if (!PAGES.includes(name)) name = "overview";
@@ -473,6 +531,7 @@ function showPage(name) {
   });
   try { localStorage.setItem("qqbot.page", name); } catch (e) { /* 隐私模式 */ }
   if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  if (name === "stickers") setTimeout(loadStickers, 0);
   window.scrollTo({ top: 0 });
 }
 
@@ -938,6 +997,183 @@ $("btnNapcatRestart").onclick = async () => {
     await loadNapcat();
     if (tries >= 12) clearInterval(tick);
   }, 4000);
+};
+
+// ---------------- 表情包 ----------------
+let stickerPage = 1;
+const STICKER_PAGE_SIZE = 24;
+let stickerItems = {};
+
+function renderStickerStats(s) {
+  $("stickerStats").innerHTML =
+    `<div><b>${s.total ?? 0}</b>总数</div>` +
+    `<div><b>${s.persona ?? 0}</b>人设图</div>` +
+    `<div><b>${s.learned ?? 0}</b>学习图</div>` +
+    `<div><b>${s.pending ?? 0}</b>待审核</div>` +
+    `<div><b>${s.disabled ?? 0}</b>已停用</div>` +
+    `<div><b>${s.uses ?? 0}</b>发送次数</div>`;
+}
+
+function renderStickerGrid(items) {
+  const grid = $("stickerGrid");
+  stickerItems = {};
+  if (!items.length) {
+    grid.innerHTML = '<div class="hint2">没有符合条件的表情。</div>';
+    return;
+  }
+  grid.innerHTML = items.map((s) => {
+    stickerItems[s.id] = s;
+    const approved = Number(s.approved) === 1;
+    const enabled = Number(s.enabled) === 1;
+    const persona = Number(s.persona) === 1;
+    return (
+      `<div class="sticker-card">` +
+      `<img src="/api/stickers/${s.id}/file" loading="lazy" alt="sticker ${s.id}" />` +
+      `<div class="meta">#${s.id} · ${escapeHtml(s.source || "")}` +
+      `${persona ? ' · <b style="color:var(--acc)">人设</b>' : ""}` +
+      `${approved ? "" : ' · <b style="color:var(--warn)">待审</b>'}</div>` +
+      `<div class="meta">情绪：${escapeHtml(s.mood || "—")}</div>` +
+      `<div class="meta">标签：${escapeHtml(s.tags || "—")}</div>` +
+      `<div class="meta">出现 ${s.seen_count ?? 0} · 使用 ${s.use_count ?? 0}</div>` +
+      `<div class="ops">` +
+      (approved ? "" : `<button class="ghost mini" data-sact="approve" data-sid="${s.id}">批准</button>`) +
+      `<button class="ghost mini" data-sact="toggle" data-sid="${s.id}" data-on="${enabled ? 1 : 0}">${enabled ? "停用" : "启用"}</button>` +
+      `<button class="ghost mini" data-sact="edit" data-sid="${s.id}">标签</button>` +
+      `<button class="ghost mini danger" data-sact="delete" data-sid="${s.id}">删除</button>` +
+      `</div></div>`
+    );
+  }).join("");
+}
+
+async function loadStickers() {
+  if (!$("stickerGrid")) return;
+  const status = $("stickerStatus").value || "all";
+  const q = ($("stickerQuery").value || "").trim();
+  const params = new URLSearchParams({
+    page: stickerPage, page_size: STICKER_PAGE_SIZE, status, q,
+  });
+  try {
+    const r = await fetch("/api/stickers?" + params.toString());
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "加载失败");
+    renderStickerStats(d.stats || {});
+    renderStickerGrid(d.items || []);
+    const pages = Math.max(1, Math.ceil((d.total || 0) / STICKER_PAGE_SIZE));
+    $("stickerPage").textContent = `第 ${d.page} / ${pages} 页 · 共 ${d.total || 0} 张`;
+    $("stickerPrev").disabled = d.page <= 1;
+    $("stickerNext").disabled = d.page >= pages;
+    $("stickerState").textContent = "";
+  } catch (e) {
+    $("stickerState").textContent = "加载失败：" + e.message;
+  }
+}
+
+async function stickerPost(url, body = {}) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) throw new Error(d.error || "操作失败");
+  return d;
+}
+
+$("stickerGrid").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-sact]");
+  if (!btn) return;
+  const id = btn.dataset.sid;
+  const act = btn.dataset.sact;
+  try {
+    if (act === "delete") {
+      if (!confirm("删除这张表情？文件也会一起删掉。")) return;
+      await stickerPost(`/api/stickers/${id}/delete`);
+      toast("已删除");
+    } else if (act === "approve") {
+      await stickerPost(`/api/stickers/${id}/update`, { approved: true, enabled: true });
+      toast("已批准");
+    } else if (act === "toggle") {
+      await stickerPost(`/api/stickers/${id}/update`, { enabled: btn.dataset.on !== "1" });
+      toast(btn.dataset.on === "1" ? "已停用" : "已启用");
+    } else if (act === "edit") {
+      const s = stickerItems[id] || {};
+      const mood = prompt("情绪（如：无语 / 喝茶 / 困，留空表示不设）", s.mood || "");
+      if (mood === null) return;
+      const tags = prompt("标签（逗号分隔）", s.tags || "");
+      if (tags === null) return;
+      await stickerPost(`/api/stickers/${id}/update`, { mood, tags });
+      toast("已更新标签");
+    }
+    await loadStickers();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$("stickerStatus").onchange = () => { stickerPage = 1; loadStickers(); };
+$("stickerQuery").onkeydown = (ev) => {
+  if (ev.key === "Enter") { stickerPage = 1; loadStickers(); }
+};
+$("btnStickerRefresh").onclick = () => { stickerPage = 1; loadStickers(); };
+$("stickerPrev").onclick = () => { if (stickerPage > 1) { stickerPage--; loadStickers(); } };
+$("stickerNext").onclick = () => { stickerPage++; loadStickers(); };
+
+$("btnStickerUpload").onclick = () => $("stickerUpload").click();
+$("stickerUpload").onchange = async (ev) => {
+  const files = Array.from(ev.target.files || []);
+  if (!files.length) return;
+  $("stickerState").textContent = "正在上传…";
+  try {
+    const payload = [];
+    for (const file of files) {
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      payload.push({ name: file.name, data });
+    }
+    const d = await stickerPost("/api/stickers/upload", { files: payload });
+    toast(`已上传 ${d.saved.length} 张` + (d.errors.length ? `，失败 ${d.errors.length} 张` : ""));
+    ev.target.value = "";
+    await loadStickers();
+  } catch (e) {
+    $("stickerState").textContent = "";
+    toast(e.message, true);
+  }
+};
+
+$("btnStickerSync").onclick = async () => {
+  const input = prompt("同步 QQ 收藏表情的前几张？", "10");
+  if (input === null) return;
+  const count = Math.max(1, Math.min(100, Number(input) || 10));
+  $("btnStickerSync").disabled = true;
+  $("stickerState").textContent = "正在从 QQ 收藏同步（大图可能需要几十秒）…";
+  try {
+    const d = await stickerPost("/api/stickers/sync-persona", { count });
+    toast(`同步完成：新增 ${d.added}，更新 ${d.promoted}，跳过 ${d.skipped}`);
+    await loadStickers();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    $("btnStickerSync").disabled = false;
+    $("stickerState").textContent = "";
+  }
+};
+
+$("btnStickerApprove").onclick = async () => {
+  try {
+    const r = await fetch("/api/stickers?status=pending&page_size=100");
+    const d = await r.json();
+    const ids = (d.items || []).map((x) => x.id);
+    if (!ids.length) return toast("没有待审核表情");
+    await stickerPost("/api/stickers/batch", { action: "approve", ids });
+    toast(`已批准 ${ids.length} 张`);
+    await loadStickers();
+  } catch (e) {
+    toast(e.message, true);
+  }
 };
 
 loadNapcat();
