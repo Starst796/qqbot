@@ -3,11 +3,11 @@
 分层原则与 `media.py` 一致：core 不依赖 NoneBot 适配器，只处理通用消息段
 （`segment.type` / `segment.data`）。真正的发送（`MessageSegment.image`）由插件完成。
 
-三种来源：
-* `persona` —— 仓库自带的默认人设图，首次启动复制到 `data/stickers/persona/`；
-  永远排在候选列表最前面。
+四种来源：
+* `persona` —— 默认人设图（从 QQ 收藏前 N 张同步），永远排在候选列表最前面。
 * `learned` —— 从群消息里抓到的图片表情，默认待审核，面板批准后才可发送。
 * `upload`  —— 管理面板手动上传，直接可用。
+* `archive` —— 手工归档的额外素材，可直接用，但不像 persona 那样占据前排。
 
 所有运行期文件都放在 `data/stickers/` 下 —— systemd 只允许服务写 `data/`。
 """

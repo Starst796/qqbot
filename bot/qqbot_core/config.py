@@ -191,7 +191,8 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     # ---- 表情包 ----
-    # 一套库三种来源：persona（默认人设图，永远排最前）/ learned（群友表情）/ upload（面板上传）
+    # 一套库四种来源：persona（默认人设图，永远排最前）/ learned（群友表情）/
+    # upload（面板上传）/ archive（手工归档的额外素材，可用但不占人设前排）
     "stickers": {
         "enabled": True,
         # 被 @ 时给模型一个 send_sticker 工具；关闭后只能走下面的概率附带
