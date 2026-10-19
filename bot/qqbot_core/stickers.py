@@ -3,11 +3,10 @@
 分层原则与 `media.py` 一致：core 不依赖 NoneBot 适配器，只处理通用消息段
 （`segment.type` / `segment.data`）。真正的发送（`MessageSegment.image`）由插件完成。
 
-四种来源：
-* `persona` —— 默认人设图（从 QQ 收藏前 N 张同步），永远排在候选列表最前面。
+三种来源：
+* `persona` —— 人设图（QQ 收藏前 N 张自动同步 + 手工补充），永远排在候选最前面。
 * `learned` —— 从群消息里抓到的图片表情，默认待审核，面板批准后才可发送。
 * `upload`  —— 管理面板手动上传，直接可用。
-* `archive` —— 手工归档的额外素材，可直接用，但不像 persona 那样占据前排。
 
 所有运行期文件都放在 `data/stickers/` 下 —— systemd 只允许服务写 `data/`。
 """
@@ -32,7 +31,6 @@ STICKER_DIR = config.DATA_DIR / "stickers"
 PERSONA_DIR = STICKER_DIR / "persona"
 LEARNED_DIR = STICKER_DIR / "learned"
 UPLOAD_DIR = STICKER_DIR / "upload"
-ARCHIVE_DIR = STICKER_DIR / "archive"
 PERSONA_MANIFEST = config.BASE_DIR / "assets" / "stickers" / "persona.json"
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQBot"
@@ -95,7 +93,7 @@ def _seg_data(seg: Any) -> dict[str, Any]:
 
 
 def ensure_dirs() -> None:
-    for path in (STICKER_DIR, PERSONA_DIR, LEARNED_DIR, UPLOAD_DIR, ARCHIVE_DIR):
+    for path in (STICKER_DIR, PERSONA_DIR, LEARNED_DIR, UPLOAD_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 

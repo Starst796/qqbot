@@ -60,7 +60,7 @@ qqbot/
 | `data/config.json` | 可热改配置（面板读写） |
 | `data/qqbot.db` | 消息、向量、会话、复读学习表、接话对（SQLite WAL） |
 | `data/hf/` | embedding 模型缓存（HF_HOME） |
-| `data/stickers/` | 表情包文件（persona / learned / upload / archive；SQLite 只存索引） |
+| `data/stickers/` | 表情包文件（persona / learned / upload；SQLite 只存索引） |
 | `napcat/data/` | QQ 登录态与 NapCat 配置（**切勿删除**） |
 | `bot/.env` | 密钥（DeepSeek Key、OneBot token） |
 
@@ -139,8 +139,6 @@ qqbot/
 - **默认十张**：启动时若库里还没有人设图，会自动调用 OneBot `fetch_custom_face`，
   把 QQ 收藏表情的**前 10 张**下载到 `data/stickers/persona/`，标记 `persona=1`；
   面板「表情包」页也有同步按钮。文件在 `data/` 里，重启不丢，永远排在候选最前。
-- **归档**：手工提供的额外素材放在 `data/stickers/archive/`，标记 `source=archive`：
-  可直接参与抽取，但不像 persona 那样占据前排；面板可筛选「归档」。
 - **学习**：群消息里的 `image`（`sub_type=1` 或 summary 含“表情/贴纸”）会异步下载，
   按 SHA-256 去重，默认 `approved=0` 待审核；超过体积/速率上限自动跳过。
   `mface` 没有可下载 URL 时目前直接跳过（跨账号回放也不稳定）。

@@ -273,7 +273,6 @@
         <option value="persona">人设图</option>
         <option value="pending">待审核</option>
         <option value="learned">学习图</option>
-        <option value="archive">归档</option>
         <option value="upload">上传图</option>
         <option value="disabled">已停用</option>
       </select>
@@ -1010,7 +1009,6 @@ function renderStickerStats(s) {
     `<div><b>${s.total ?? 0}</b>总数</div>` +
     `<div><b>${s.persona ?? 0}</b>人设图</div>` +
     `<div><b>${s.learned ?? 0}</b>学习图</div>` +
-    `<div><b>${s.archive ?? 0}</b>归档</div>` +
     `<div><b>${s.pending ?? 0}</b>待审核</div>` +
     `<div><b>${s.disabled ?? 0}</b>已停用</div>` +
     `<div><b>${s.uses ?? 0}</b>发送次数</div>`;
