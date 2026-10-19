@@ -726,12 +726,14 @@ async def _auto_sync_persona() -> None:
     """首次运行且库里没有人设图时，等 OneBot 连上后自动抓 QQ 收藏前 N 张。"""
     if not _cfg().get("auto_sync_persona", True):
         return
-    if db.persona_sticker_count() > 0:
-        return
     count = max(1, int(_cfg().get("persona_sync_count", 10) or 10))
+    if db.persona_sticker_count() >= count:
+        return
     for _ in range(18):  # 最多等约 3 分钟，登录慢也不阻塞启动
         try:
             result = await sync_custom_faces(count)
+            if result.get("total", 0) < count:
+                return  # 收藏本来就不够 10 张，重试也没用
             if result.get("added") or result.get("promoted"):
                 return
         except Exception as exc:  # noqa: BLE001 —— 未连接/未登录是正常情况
