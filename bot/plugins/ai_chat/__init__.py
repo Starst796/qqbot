@@ -255,8 +255,11 @@ async def _complete(messages: list[dict], cfg: dict) -> str:
 # 当前轮所在群。工具 handler 只收 args，群号这类「上下文」用 ContextVar 传，
 # 免得把群号塞进工具参数里让模型去猜。
 _current_group: contextvars.ContextVar[str] = contextvars.ContextVar("qqbot_group", default="")
-# send_sticker 工具只“预订”一张图，真正发送在 _reply 里统一做（要复用拟人化延迟）
-_pending_sticker: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+# send_sticker 工具只“预订”一张图，真正发送在 _reply 里统一做（要复用拟人化延迟）。
+# 用 list 而不是直接存 int：Python 3.10/3.11 的 asyncio.wait_for 会把工具协程包进
+# 新 Task，工具里 set() 的 ContextVar 改动不会传回 _handle；改 list 是同一对象，
+# append 才能跨 Task 可见。
+_pending_sticker: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
     "qqbot_pending_sticker", default=None
 )
 
@@ -461,7 +464,8 @@ def register_tools() -> None:
                 {"ok": False, "hint": "表情包功能没开，直接说话就好。"},
                 ensure_ascii=False,
             )
-        if _pending_sticker.get() is not None:
+        pending = _pending_sticker.get()
+        if pending:
             return json.dumps(
                 {"ok": True, "hint": "这一轮已经选好一张了，不要重复发。"},
                 ensure_ascii=False,
@@ -479,7 +483,10 @@ def register_tools() -> None:
                 {"ok": False, "hint": "没有可用的表情，直接说话，不要硬发。"},
                 ensure_ascii=False,
             )
-        _pending_sticker.set(int(row["id"]))
+        if pending is None:
+            pending = []
+            _pending_sticker.set(pending)
+        pending.append(int(row["id"]))
         return json.dumps(
             {
                 "ok": True,
@@ -941,10 +948,11 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         try:
             if _tools_enabled_for(event):
                 token = _current_group.set(group_id or "")
-                sticker_token = _pending_sticker.set(None)
+                sticker_token = _pending_sticker.set([])
                 try:
                     answer = await _tool_loop(messages, cfg, question)
-                    pending_id = _pending_sticker.get()
+                    pending = _pending_sticker.get() or []
+                    pending_id = pending[0] if pending else None
                 finally:
                     _pending_sticker.reset(sticker_token)
                     _current_group.reset(token)

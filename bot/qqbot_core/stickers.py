@@ -483,13 +483,25 @@ def save_upload(data: bytes, filename: str = "") -> dict[str, Any] | None:
     digest = hashlib.sha256(data).hexdigest()
     ext = _EXT_BY_MIME.get(mime, ".img")
     path = UPLOAD_DIR / f"{digest}{ext}"
-    if not path.exists():
-        path.write_bytes(data)
     rel = path.relative_to(STICKER_DIR).as_posix()
 
     existing = db.get_sticker_by_sha(digest)
     if existing is not None:
-        return existing
+        # 上传同一张图应当把它变成“可用”：学习图可能还是待审核状态
+        updates: dict[str, Any] = {"approved": True, "enabled": True}
+        if not int(existing.get("persona") or 0):
+            if not path.exists():
+                path.write_bytes(data)
+            old_path = resolve_path(existing)
+            updates["source"] = "upload"
+            updates["file_path"] = rel
+            if old_path is not None and old_path != path:
+                remove_file(existing)
+        updated = db.update_sticker(int(existing["id"]), updates)
+        return updated or existing
+
+    if not path.exists():
+        path.write_bytes(data)
     new_id = db.add_sticker(
         sha256=digest,
         file_path=rel,
