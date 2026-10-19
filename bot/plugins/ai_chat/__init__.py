@@ -970,6 +970,12 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
 
     # 引用回复：reply 段只有一个 id，必须回查原消息，否则模型看不到“在问什么”
     quoted_text, quoted_images = await _quoted(bot, event)
+    if reply_ids(event.message) or quoted_text:
+        logger.info(
+            f"ai_chat: 引用解析 ids={reply_ids(event.message)} "
+            f"segs={[s.type for s in event.message]} "
+            f"text={quoted_text[:60]!r} imgs={len(quoted_images)}"
+        )
 
     # 语义触发：没被点名的群消息先抽签、再判定，任一不过就当没看见。
     # 抽签在前：① 频率与「合不合适」解耦 ② 抽不中就省掉判定那次调用
