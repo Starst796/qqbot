@@ -654,24 +654,43 @@ def _to_message(raw: Any) -> Message:
     return Message(segs)
 
 
+def _reply_name(sender: Any) -> str:
+    if sender is None:
+        return "群友"
+    if isinstance(sender, dict):
+        return str(sender.get("card") or sender.get("nickname") or "群友")
+    return str(
+        getattr(sender, "card", None) or getattr(sender, "nickname", None) or "群友"
+    )
+
+
 async def _quoted(bot: Bot, event: MessageEvent) -> tuple[str, list[str]]:
     """取「引用回复」的原消息：返回 (给人看的引文, 引文里的图片地址)。
 
-    OneBot 的 reply 段只有一个消息 id，内容必须回查 `get_msg`。
+    ⚠️ NoneBot 的 OneBot v11 适配器在 `_check_reply` 里**已经把 reply 段从
+    `event.message` 里删掉**，并自己调过 `get_msg` 存进 `event.reply`。
+    所以优先读 `event.reply`；只有在它缺失（旧适配器/异常）时才回查 get_msg。
     没有引用、或原消息已撤回/过期时返回空串，让模型知道“看不到”，而不是瞎猜。
     """
-    ids = reply_ids(event.message)
-    if not ids:
-        return "", []
-    try:
-        data = await bot.call_api("get_msg", message_id=int(ids[0]))
-    except Exception as exc:  # noqa: BLE001 —— 撤回/过期/权限不足都走这里
-        logger.debug(f"ai_chat: 引用消息读取失败：{type(exc).__name__}: {exc}")
-        return "（引用的那条消息已经看不到了）", []
+    reply = getattr(event, "reply", None)
+    if reply is not None:
+        quoted = getattr(reply, "message", None)
+        if quoted is None:
+            return "", []
+        name = _reply_name(getattr(reply, "sender", None))
+    else:
+        ids = reply_ids(event.message)
+        if not ids:
+            return "", []
+        try:
+            data = await bot.call_api("get_msg", message_id=int(ids[0]))
+        except Exception as exc:  # noqa: BLE001 —— 撤回/过期/权限不足都走这里
+            logger.debug(f"ai_chat: 引用消息读取失败：{type(exc).__name__}: {exc}")
+            return "（引用的那条消息已经看不到了）", []
 
-    quoted = _to_message((data or {}).get("message") or [])
-    sender = (data or {}).get("sender") or {}
-    name = sender.get("card") or sender.get("nickname") or "群友"
+        quoted = _to_message((data or {}).get("message") or [])
+        name = _reply_name((data or {}).get("sender"))
+
     body = " ".join(
         part for part in (quoted.extract_plain_text().strip(), placeholders(quoted)) if part
     )
@@ -970,12 +989,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
 
     # 引用回复：reply 段只有一个 id，必须回查原消息，否则模型看不到“在问什么”
     quoted_text, quoted_images = await _quoted(bot, event)
-    if reply_ids(event.message) or quoted_text:
-        logger.info(
-            f"ai_chat: 引用解析 ids={reply_ids(event.message)} "
-            f"segs={[s.type for s in event.message]} "
-            f"text={quoted_text[:60]!r} imgs={len(quoted_images)}"
-        )
+    if quoted_text:
+        logger.info(f"ai_chat: 引用 {quoted_text[:60]!r} 图片 {len(quoted_images)} 张")
 
     # 语义触发：没被点名的群消息先抽签、再判定，任一不过就当没看见。
     # 抽签在前：① 频率与「合不合适」解耦 ② 抽不中就省掉判定那次调用
