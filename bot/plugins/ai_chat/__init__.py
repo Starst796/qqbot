@@ -634,6 +634,26 @@ async def _should_reply(
     return False
 
 
+def _to_message(raw: Any) -> Message:
+    """把 get_msg 返回的消息还原成 Message。
+
+    NapCat 可能回消息段数组（dict 列表），也可能按配置回 CQ 码字符串。
+    `Message(dict列表)` 在 NoneBot2 里会抛 ValueError，所以逐段转成 MessageSegment。
+    """
+    if isinstance(raw, str):
+        return Message(raw)
+    segs: list[Any] = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            stype = str(item.get("type") or "")
+            if not stype:
+                continue
+            segs.append(MessageSegment(type=stype, data=dict(item.get("data") or {})))
+        elif isinstance(item, MessageSegment):
+            segs.append(item)
+    return Message(segs)
+
+
 async def _quoted(bot: Bot, event: MessageEvent) -> tuple[str, list[str]]:
     """取「引用回复」的原消息：返回 (给人看的引文, 引文里的图片地址)。
 
@@ -649,8 +669,7 @@ async def _quoted(bot: Bot, event: MessageEvent) -> tuple[str, list[str]]:
         logger.debug(f"ai_chat: 引用消息读取失败：{type(exc).__name__}: {exc}")
         return "（引用的那条消息已经看不到了）", []
 
-    raw = (data or {}).get("message") or []
-    quoted = Message(raw)
+    quoted = _to_message((data or {}).get("message") or [])
     sender = (data or {}).get("sender") or {}
     name = sender.get("card") or sender.get("nickname") or "群友"
     body = " ".join(
