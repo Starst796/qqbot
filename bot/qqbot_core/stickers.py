@@ -32,6 +32,7 @@ STICKER_DIR = config.DATA_DIR / "stickers"
 PERSONA_DIR = STICKER_DIR / "persona"
 LEARNED_DIR = STICKER_DIR / "learned"
 UPLOAD_DIR = STICKER_DIR / "upload"
+ARCHIVE_DIR = STICKER_DIR / "archive"
 PERSONA_MANIFEST = config.BASE_DIR / "assets" / "stickers" / "persona.json"
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQBot"
@@ -94,7 +95,7 @@ def _seg_data(seg: Any) -> dict[str, Any]:
 
 
 def ensure_dirs() -> None:
-    for path in (STICKER_DIR, PERSONA_DIR, LEARNED_DIR, UPLOAD_DIR):
+    for path in (STICKER_DIR, PERSONA_DIR, LEARNED_DIR, UPLOAD_DIR, ARCHIVE_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 

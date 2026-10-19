@@ -592,6 +592,8 @@ def list_stickers(
         where.append("source = 'learned'")
     elif status == "upload":
         where.append("source = 'upload'")
+    elif status == "archive":
+        where.append("source = 'archive'")
 
     if source.strip():
         where.append("source = ?")
@@ -743,6 +745,7 @@ def sticker_stats() -> dict[str, int]:
             "SELECT COUNT(*) AS total, "
             "COALESCE(SUM(persona = 1), 0) AS persona, "
             "COALESCE(SUM(source = 'learned'), 0) AS learned, "
+            "COALESCE(SUM(source = 'archive'), 0) AS archive, "
             "COALESCE(SUM(approved = 0), 0) AS pending, "
             "COALESCE(SUM(enabled = 0), 0) AS disabled, "
             "COALESCE(SUM(use_count), 0) AS uses "
