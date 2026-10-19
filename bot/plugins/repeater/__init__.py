@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from collections import deque
@@ -265,7 +266,9 @@ async def _maybe_sticker_reply(event: MessageEvent, group_id: str, cfg: dict) ->
     activity.mark_spoken(group_id)
     logger.info(f"repeater: 接图 群{group_id}")
     try:
-        await matcher.send(MessageSegment.image(str(path)))
+        # 容器里的 NapCat 读不到宿主机路径，必须内联成 base64
+        data = await asyncio.to_thread(path.read_bytes)
+        await matcher.send(MessageSegment.image(data))
     except Exception as exc:  # noqa: BLE001 —— 发图失败不影响其他路径
         logger.warning(f"repeater: 接图失败：{type(exc).__name__}: {exc}")
         return False

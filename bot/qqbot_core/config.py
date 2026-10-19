@@ -208,7 +208,8 @@ DEFAULTS: dict[str, Any] = {
         # 同群这段时间内发过的图不再抽（防复读同一张）
         "recent_exclude_seconds": 1800,
         "min_bytes": 4096,
-        "max_bytes": 2 * 1024 * 1024,
+        # QQ 群里的动图表情常见 2~5MB，学习上限放宽到 8MB
+        "max_bytes": 8 * 1024 * 1024,
         # 默认人设图直接取 QQ 收藏表情的前 N 张；首次启动/面板按钮会本地化
         "auto_sync_persona": True,
         "persona_sync_count": 10,

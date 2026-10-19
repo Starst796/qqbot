@@ -888,7 +888,9 @@ async def _reply(
         if path is not None and stickers.can_send(group_id):
             try:
                 await asyncio.sleep(random.uniform(gap_low, gap_high))
-                await matcher.send(MessageSegment.image(str(path)))
+                # 用字节而不是本地路径：NapCat 在容器里读不到宿主机的 data/stickers
+                data = await asyncio.to_thread(path.read_bytes)
+                await matcher.send(MessageSegment.image(data))
                 stickers.mark_sent(int(sticker_row["id"]), group_id)
             except Exception as exc:  # noqa: BLE001 —— 发图失败不该影响已发出的文字
                 logger.warning(f"ai_chat: 发表情失败：{type(exc).__name__}: {exc}")
