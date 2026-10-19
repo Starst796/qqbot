@@ -31,13 +31,14 @@ from nonebot import get_driver, logger, on_message
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
+    Message,
     MessageEvent,
     MessageSegment,
     PrivateMessageEvent,
 )
 
 from qqbot_core import activity, config, db, stickers, tools
-from qqbot_core.media import fetch_data_uri, image_sources, placeholders
+from qqbot_core.media import fetch_data_uri, image_sources, placeholders, reply_ids
 
 driver = get_driver()
 
@@ -557,7 +558,9 @@ def _classify_allowed(group_id: str, per_minute: int) -> bool:
     return True
 
 
-async def _should_reply(event: GroupMessageEvent, cfg: dict) -> bool:
+async def _should_reply(
+    event: GroupMessageEvent, cfg: dict, quoted: str = ""
+) -> bool:
     trigger = cfg.get("trigger", {}) or {}
     sem = trigger.get("semantic", {}) or {}
     group_id = str(event.group_id)
@@ -573,7 +576,9 @@ async def _should_reply(event: GroupMessageEvent, cfg: dict) -> bool:
         who = "机器人" if row["is_bot"] else (row["nickname"] or row["user_id"])
         lines.append(f"{who}: {row['content']}")
     current = " ".join(
-        part for part in (event.get_plaintext().strip(), placeholders(event.message)) if part
+        part
+        for part in (quoted, event.get_plaintext().strip(), placeholders(event.message))
+        if part
     )
     lines.append(f"{_display_name(event)}: {current}")
 
@@ -629,16 +634,47 @@ async def _should_reply(event: GroupMessageEvent, cfg: dict) -> bool:
     return False
 
 
-async def _collect_images(event: MessageEvent) -> list[str]:
-    """把消息里的图片下载成 data URI；未启用、读取失败或超限的整张跳过。"""
+async def _quoted(bot: Bot, event: MessageEvent) -> tuple[str, list[str]]:
+    """取「引用回复」的原消息：返回 (给人看的引文, 引文里的图片地址)。
+
+    OneBot 的 reply 段只有一个消息 id，内容必须回查 `get_msg`。
+    没有引用、或原消息已撤回/过期时返回空串，让模型知道“看不到”，而不是瞎猜。
+    """
+    ids = reply_ids(event.message)
+    if not ids:
+        return "", []
+    try:
+        data = await bot.call_api("get_msg", message_id=int(ids[0]))
+    except Exception as exc:  # noqa: BLE001 —— 撤回/过期/权限不足都走这里
+        logger.debug(f"ai_chat: 引用消息读取失败：{type(exc).__name__}: {exc}")
+        return "（引用的那条消息已经看不到了）", []
+
+    raw = (data or {}).get("message") or []
+    quoted = Message(raw)
+    sender = (data or {}).get("sender") or {}
+    name = sender.get("card") or sender.get("nickname") or "群友"
+    body = " ".join(
+        part for part in (quoted.extract_plain_text().strip(), placeholders(quoted)) if part
+    )
+    return f"引用 {name}：{body or '（空消息）'}", image_sources(quoted)
+
+
+async def _collect_images(
+    event: MessageEvent, extra: list[str] | None = None
+) -> list[str]:
+    """把消息里的图片下载成 data URI；未启用、读取失败或超限的整张跳过。
+
+    `extra` 是引用消息里的图片地址，排在本条消息的图片之后，共用同一个张数上限。
+    """
     vision = config.get("vision", {}) or {}
     if not vision.get("enabled", True):
         return []
     max_images = int(vision.get("max_images", 3) or 0)
     max_bytes = int(float(vision.get("max_mb", 5.0) or 5.0) * 1024 * 1024)
     timeout = float(vision.get("timeout_sec", 20) or 20)
+    sources = image_sources(event.message) + [s for s in (extra or []) if s]
     uris: list[str] = []
-    for src in image_sources(event.message)[:max_images]:
+    for src in sources[:max_images]:
         uri = await fetch_data_uri(src, max_bytes=max_bytes, timeout=timeout)
         if uri:
             uris.append(uri)
@@ -913,6 +949,9 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         logger.warning("ai_chat: 未配置 DEEPSEEK_API_KEY，忽略本次回复")
         return
 
+    # 引用回复：reply 段只有一个 id，必须回查原消息，否则模型看不到“在问什么”
+    quoted_text, quoted_images = await _quoted(bot, event)
+
     # 语义触发：没被点名的群消息先抽签、再判定，任一不过就当没看见。
     # 抽签在前：① 频率与「合不合适」解耦 ② 抽不中就省掉判定那次调用
     if (
@@ -923,7 +962,7 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         if not _ambient_lottery(cfg):
             logger.debug("ai_chat: 主动接话未抽中，跳过")
             return
-        if not await _should_reply(event, cfg):
+        if not await _should_reply(event, cfg, quoted_text):
             return
 
     if not _limiter.check(group_id, user_id, cfg.get("rate_limit", {}) or {}):
@@ -938,8 +977,9 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         return
 
     try:
-        question = event.get_plaintext().strip()
-        images = await _collect_images(event)
+        plain = event.get_plaintext().strip()
+        question = f"{quoted_text}\n{plain}".strip() if quoted_text else plain
+        images = await _collect_images(event, quoted_images)
         if not question and not images:
             return
         messages = await _build_messages(event, question, images)

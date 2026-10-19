@@ -26,6 +26,8 @@ _PLACEHOLDER = {
     "file": "文件",
     "json": "卡片",
     "xml": "卡片",
+    # reply 段本身不含内容，只是“引用了一条消息”的标记；
+    # 被引用的原文由调用方用 reply_ids() 回查，这里不折算成占位符以免污染语义。
 }
 
 
@@ -76,6 +78,18 @@ def is_placeholder_only(text: str) -> bool:
     """判断一条内容是否只剩占位符（`[图片]`、`[表情x2]` 之类），没有真实文本。"""
     stripped = (text or "").strip()
     return bool(stripped) and bool(_PLACEHOLDER_ONLY.match(stripped))
+
+
+def reply_ids(message: Any) -> list[str]:
+    """取出「引用回复」段里的被引用消息 id（OneBot 的 reply 段只有 id，没有内容）。"""
+    ids: list[str] = []
+    for seg in _segments(message):
+        if _seg_type(seg) != "reply":
+            continue
+        value = str(_seg_data(seg).get("id") or "").strip()
+        if value:
+            ids.append(value)
+    return ids
 
 
 def image_sources(message: Any) -> list[str]:
