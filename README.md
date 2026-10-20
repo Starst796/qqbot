@@ -419,44 +419,48 @@ Windows 上还会遇到的：
 | 查看 NapCat 日志 | `cd napcat && docker compose logs -f` |
 | 升级 NapCat | `docker compose pull && docker compose up -d` |
 | 改代码部署（主实例） | 本地 `git push origin master`（钩子自动重启） |
-| 改代码部署（测试实例） | 本地 `git push test master`（同一份代码，钩子重启 `qqbot-test`） |
+| 改代码部署（其他实例） | 对那套实例的裸仓库 `git push <remote> master`（钩子重启对应服务） |
 | 改配置 | 面板在线改，或编辑 `data/config.json`（自动热载） |
 | 重建接话对 | 面板「重建全部群的接话对」（后台跑，进度实时显示） |
 | 备份 | `data/qqbot.db`、`data/config.json`、`napcat/data/`、`bot/.env` |
 
-### 多实例：主 + 测试
+### 多实例：一台机器跑多套
 
-同一份代码可以在一台机器上跑两套完全隔离的实例。差异**全部走配置/环境变量**，
+同一份代码可以在一台机器上跑多套完全隔离的实例。差异**全部走配置/环境变量**，
 不改被跟踪的文件（否则 `git push` 的 `checkout -f` 会把它冲掉）：
 
-| | 主实例 | 测试实例 |
+| | 主实例 | 第二套（示例） |
 | --- | --- | --- |
-| 裸仓库 | `/home/ubuntu/qqbot.git` | `/home/ubuntu/qqbot-test.git` |
-| 工作树 | `/home/ubuntu/qqbot` | `/home/ubuntu/qqbot-test` |
-| 本地 remote | `origin` | `test` |
-| 服务 | `qqbot.service` | `qqbot-test.service`（+ `qqbot-test-watch.service`） |
+| 裸仓库 | `/home/ubuntu/qqbot.git` | `/home/ubuntu/<名字>.git` |
+| 工作树 | `/home/ubuntu/qqbot` | `/home/ubuntu/<名字>` |
+| 本地 remote | `origin` | `<名字>` |
+| 服务 | `qqbot.service` | `<名字>.service` |
 | 数据 / venv | `<工作树>/data`、`<工作树>/venv` | 各自独立 |
-| 面板端口 | `bot/.env` 的 `PORT=8081` | `PORT=8082` |
-| NapCat 容器 | `qqbot-napcat`（6099 / 3001） | `napcat-test`（6100 / 3002） |
+| 面板端口 | `bot/.env` 的 `PORT=8081` | 换一个空闲端口，如 `8082` |
+| NapCat 容器 | `qqbot-napcat`（6099 / 3001） | 换名换端口，如 `6100` / `3002` |
 
 - 面板端口来自 `bot/.env` 的 `PORT`（`bot/bot.py` 读它，不再硬编码 8081）。
 - NapCat 的容器名/项目名/端口来自 `napcat/.env`（参照 `napcat/.env.example`，已 gitignore），
   `docker-compose.yml` 里用的是 `${VAR:-默认值}`，**不设变量时行为与主实例完全一致**。
 - ⚠️ `docker-compose.yml` 顶部的 `name: ${COMPOSE_PROJECT:-napcat}` **不能删**：两套实例的父目录
   都叫 `napcat`，不显式给项目名会被推断成同一个项目，导致互相 Recreate。
-- 建第二套实例：
+- 建第二套实例（把 `<名字>` 换成实际名称）：
 
   ```bash
   # 服务器：渲染钩子（--dry-run 只写 deploy/out/，不动 systemd）
-  cd /home/ubuntu/qqbot-test/deploy
-  bash install.sh --dry-run --app-dir /home/ubuntu/qqbot-test --service qqbot-test
-  git init -q --bare -b master /home/ubuntu/qqbot-test.git
-  install -m 0755 out/post-receive /home/ubuntu/qqbot-test.git/hooks/post-receive
+  cd /home/ubuntu/qqbot/deploy
+  bash install.sh --dry-run --app-dir /home/ubuntu/<名字> --service <名字>
+  git init -q --bare -b master /home/ubuntu/<名字>.git
+  install -m 0755 out/post-receive /home/ubuntu/<名字>.git/hooks/post-receive
 
   # 本地：加 remote 并首次推送（钩子会自动检出 + 重启服务）
-  git remote add test user@your-server:/home/ubuntu/qqbot-test.git
-  git push -u test master
+  git remote add <名字> user@your-server:/home/ubuntu/<名字>.git
+  git push -u <名字> master
   ```
+
+- ⚠️ `git push -u <名字> master` 会把**上游分支**改成 `<名字>/master`，之后裸 `git push`
+  默认推到第二套实例；要回落主实例就再执行一次 `git push -u origin master`。
+- 每套实例的 QQ 号必须不同：同一个 QQ 不能在两个 NapCat 里同时在线，会互相踢下线。
 
 ### 离线批量算向量（可选，但强烈建议）
 
