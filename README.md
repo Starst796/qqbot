@@ -168,6 +168,23 @@ qqbot/
   OneBot 未连接时退回只显示有聊天记录的群，页面会标注；
 - 该开关只管"要不要在该群说话"，**不影响语料入库**（那由 `storage.log_all_group_messages` 控制）。
 
+**私聊与上下文管理**
+
+面板「群与数据 → 私聊与上下文管理」处理**私聊**这一侧（私聊在 `messages` 表里就是 `group_id IS NULL`）：
+
+| 操作 | 接口 | 影响范围 |
+| --- | --- | --- |
+| 列出有私聊的人 | `GET /api/context/private` | 只读 |
+| 看某人的私聊消息 | `GET /api/context/private/messages?user_id=` | 只读 |
+| 重置某人的上下文 | `POST /api/context/private/clear` `{scope:"sessions"}` | 只删 `user:<QQ号>` 的会话 |
+| 删某人的私聊记录 | 同上 `{scope:"messages"}` | 只删 `group_id IS NULL` 的消息 |
+
+- **和群管理刻意分开**：上面群管理里的「清除该用户数据」会删掉这个人在**所有群**里的发言；
+  私聊页只碰私聊，避免“只想重置私聊上下文，结果把群语料也删了”。
+- ⚠️ **`storage.log_private` 默认是关的**：私聊消息不入库，但**上下文（`sessions`）照旧会写**。
+  所以列表里经常出现「私聊消息 0 条、上下攇 N 条」的人 —— 这是正常的，重置上下文照样有效。
+  想看到私聊正文就把「记录私聊」打开。
+
 **学习型复读（`repeat`）** —— 参考 Pallas-Bot 的 repeater，实现更轻，**不调用模型**
 
 - **跟读复读**：同一群里连续相同发言达到 `threshold`（默认 3）就跟一句，复读的是群里出现过的原话；
@@ -401,10 +418,45 @@ Windows 上还会遇到的：
 | 查看机器人日志 | `journalctl -u qqbot -f` |
 | 查看 NapCat 日志 | `cd napcat && docker compose logs -f` |
 | 升级 NapCat | `docker compose pull && docker compose up -d` |
-| 改代码部署 | 本地 `git push origin master`（钩子自动重启） |
+| 改代码部署（主实例） | 本地 `git push origin master`（钩子自动重启） |
+| 改代码部署（测试实例） | 本地 `git push test master`（同一份代码，钩子重启 `qqbot-test`） |
 | 改配置 | 面板在线改，或编辑 `data/config.json`（自动热载） |
 | 重建接话对 | 面板「重建全部群的接话对」（后台跑，进度实时显示） |
 | 备份 | `data/qqbot.db`、`data/config.json`、`napcat/data/`、`bot/.env` |
+
+### 多实例：主 + 测试
+
+同一份代码可以在一台机器上跑两套完全隔离的实例。差异**全部走配置/环境变量**，
+不改被跟踪的文件（否则 `git push` 的 `checkout -f` 会把它冲掉）：
+
+| | 主实例 | 测试实例 |
+| --- | --- | --- |
+| 裸仓库 | `/home/ubuntu/qqbot.git` | `/home/ubuntu/qqbot-test.git` |
+| 工作树 | `/home/ubuntu/qqbot` | `/home/ubuntu/qqbot-test` |
+| 本地 remote | `origin` | `test` |
+| 服务 | `qqbot.service` | `qqbot-test.service`（+ `qqbot-test-watch.service`） |
+| 数据 / venv | `<工作树>/data`、`<工作树>/venv` | 各自独立 |
+| 面板端口 | `bot/.env` 的 `PORT=8081` | `PORT=8082` |
+| NapCat 容器 | `qqbot-napcat`（6099 / 3001） | `napcat-test`（6100 / 3002） |
+
+- 面板端口来自 `bot/.env` 的 `PORT`（`bot/bot.py` 读它，不再硬编码 8081）。
+- NapCat 的容器名/项目名/端口来自 `napcat/.env`（参照 `napcat/.env.example`，已 gitignore），
+  `docker-compose.yml` 里用的是 `${VAR:-默认值}`，**不设变量时行为与主实例完全一致**。
+- ⚠️ `docker-compose.yml` 顶部的 `name: ${COMPOSE_PROJECT:-napcat}` **不能删**：两套实例的父目录
+  都叫 `napcat`，不显式给项目名会被推断成同一个项目，导致互相 Recreate。
+- 建第二套实例：
+
+  ```bash
+  # 服务器：渲染钩子（--dry-run 只写 deploy/out/，不动 systemd）
+  cd /home/ubuntu/qqbot-test/deploy
+  bash install.sh --dry-run --app-dir /home/ubuntu/qqbot-test --service qqbot-test
+  git init -q --bare -b master /home/ubuntu/qqbot-test.git
+  install -m 0755 out/post-receive /home/ubuntu/qqbot-test.git/hooks/post-receive
+
+  # 本地：加 remote 并首次推送（钩子会自动检出 + 重启服务）
+  git remote add test user@your-server:/home/ubuntu/qqbot-test.git
+  git push -u test master
+  ```
 
 ### 离线批量算向量（可选，但强烈建议）
 
