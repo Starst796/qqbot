@@ -389,6 +389,30 @@
       用于清理污染数据（删除后 FTS 索引会自动重建）。</p>
   </section>
 
+  <section class="card" data-page="data">
+    <h2>私聊与上下文管理</h2>
+    <div class="actions-inline">
+      <button class="ghost" id="btnPrivate">刷新私聊列表</button>
+      <input type="text" id="privateUser" placeholder="输入 QQ 号" style="max-width:150px" />
+      <button class="ghost" id="btnPrivateView">查看该人私聊</button>
+      <button class="ghost" id="btnPrivateReset">重置该人上下文</button>
+      <span class="hint2" id="privateState"></span>
+    </div>
+    <table id="privateTable">
+      <thead><tr><th>QQ 号</th><th>昵称</th><th>私聊消息</th><th>上下文条数</th><th>最后活动</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="hint2">「重置上下文」只清这个人的私聊对话记忆（<code>user:QQ号</code>），
+      <b>不影响</b>他在各群里的发言与语料；「删私聊记录」才删私聊消息本体。
+      两者都只碰私聊（<code>group_id IS NULL</code>），和上面群管理的删除互不干扰。<br />
+      注意：私聊消息是否入库由「记录私聊」开关控制（默认关），但<b>上下文照旧会记录</b>，
+      所以列表里可能出现「消息 0 条、上下攇 N 条」的人。</p>
+    <div id="privateMsgBox" style="display:none;margin-top:18px">
+      <h2 id="privateMsgTitle"></h2>
+      <div id="privateMsgList"></div>
+    </div>
+  </section>
+
   <div class="actions">
     <button id="save">保存配置</button>
     <button class="ghost" id="reload">保存并失效缓存</button>
@@ -747,6 +771,113 @@ $("btnClearAll").onclick = async () => {
   await clearScope({ scope: "both" });
   $("msgBox").style.display = "none";
 };
+
+// ---------------- 私聊 / 上下文管理 ----------------
+async function loadPrivate() {
+  const r = await fetch("/api/context/private");
+  const d = await r.json();
+  const tb = document.querySelector("#privateTable tbody");
+  tb.innerHTML = "";
+  const users = d.users || [];
+  $("privateState").textContent = `${users.length} 人`;
+  if (!users.length) {
+    tb.innerHTML = '<tr><td colspan="6" style="color:var(--mut)">暂无私聊记录</td></tr>';
+    return;
+  }
+  for (const u of users) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${escapeHtml(u.user_id)}</td>` +
+      `<td>${escapeHtml(u.nickname || "—")}</td>` +
+      `<td>${u.messages}</td>` +
+      `<td>${u.sessions}</td>` +
+      `<td>${fmtTime(u.last_ts)}</td>` +
+      `<td>` +
+      `<button class="ghost mini" data-pact="view" data-u="${u.user_id}">查看</button>` +
+      `<button class="ghost mini" data-pact="sessions" data-u="${u.user_id}">重置上下文</button>` +
+      `<button class="ghost mini" data-pact="messages" data-u="${u.user_id}">删私聊记录</button>` +
+      `</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+document.querySelector("#privateTable").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-pact]");
+  if (!btn) return;
+  const uid = btn.dataset.u;
+  const act = btn.dataset.pact;
+  if (act === "view") return viewPrivate(uid);
+  if (act === "sessions") {
+    if (!confirm(`重置 QQ ${uid} 的私聊对话上下文？（私聊消息保留）`)) return;
+    return clearPrivate(uid, "sessions");
+  }
+  if (act === "messages") {
+    if (!confirm(`删除 QQ ${uid} 的全部私聊消息？不可恢复（不影响他在群里的发言）`)) return;
+    await clearPrivate(uid, "messages");
+    $("privateMsgBox").style.display = "none";
+  }
+});
+
+async function viewPrivate(uid) {
+  const r = await fetch(
+    `/api/context/private/messages?user_id=${encodeURIComponent(uid)}&limit=60`
+  );
+  const d = await r.json();
+  const list = d.messages || [];
+  $("privateMsgTitle").textContent = `QQ ${uid} · 最近 ${list.length} 条私聊`;
+  const box = $("privateMsgList");
+  box.innerHTML = list.length
+    ? ""
+    : '<div class="msg" style="color:var(--mut)">无（可能是「记录私聊」开关关着）</div>';
+  for (const m of list) {
+    const div = document.createElement("div");
+    div.className = "msg";
+    div.innerHTML =
+      `<span class="who">${m.is_bot ? "[bot] " : ""}${escapeHtml(m.nickname || m.user_id)}</span>` +
+      `<span class="txt">${escapeHtml(m.content)}</span>` +
+      `<span class="t">${fmtTime(m.ts)}</span>` +
+      `<button class="ghost mini" data-pdel="${m.id}">删除</button>`;
+    box.appendChild(div);
+  }
+  $("privateMsgBox").style.display = "block";
+}
+
+$("privateMsgList").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-pdel]");
+  if (!btn) return;
+  if (!confirm("删除这一条私聊消息？")) return;
+  await clearScope({ scope: "messages", ids: [Number(btn.dataset.pdel)] });
+  btn.closest(".msg").remove();
+});
+
+async function clearPrivate(uid, scope) {
+  const r = await fetch("/api/context/private/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: uid, scope }),
+  });
+  const d = await r.json();
+  if (!d.ok) return toast(d.error || "清理失败", true);
+  toast(
+    `已删私聊消息 ${d.deleted_messages ?? 0} 条 / 上下文 ${d.cleared_sessions ?? 0} 条`
+  );
+  await loadPrivate();
+  await loadStats();
+}
+
+$("btnPrivate").onclick = loadPrivate;
+$("btnPrivateView").onclick = () => {
+  const uid = $("privateUser").value.trim();
+  if (!uid) return toast("请先输入 QQ 号", true);
+  viewPrivate(uid);
+};
+$("btnPrivateReset").onclick = async () => {
+  const uid = $("privateUser").value.trim();
+  if (!uid) return toast("请先输入 QQ 号", true);
+  if (!confirm(`重置 QQ ${uid} 的私聊对话上下文？（私聊消息保留）`)) return;
+  await clearPrivate(uid, "sessions");
+};
+loadPrivate();
 
 // ---------------- 风格蒸馏（接话对） ----------------
 async function refreshDistill() {

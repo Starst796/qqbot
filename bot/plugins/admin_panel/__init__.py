@@ -10,6 +10,9 @@
   GET  /api/stats   -> 运行统计
   POST /api/reload  -> 让 RAG 缓存失效（删数据后调用）
   GET  /api/context/groups -> 已加入的群 + 每群统计与开关状态
+  GET  /api/context/private -> 有私聊记录/上下文的 QQ 号
+  GET  /api/context/private/messages -> 某人的私聊消息
+  POST /api/context/private/clear   -> 重置某人的私聊上下文 / 删私聊记录
 """
 
 from __future__ import annotations
@@ -639,6 +642,61 @@ def _register(app) -> None:
         logger.info(
             f"admin_panel: 清理 scope={scope} group={group_id} user={user_id} "
             f"ids={ids} -> 消息 {deleted} / 上下文 {cleared}"
+        )
+        return _json(
+            {"ok": True, "deleted_messages": deleted, "cleared_sessions": cleared}
+        )
+
+    # ---- 私聊 / 上下文管理 ----
+    @app.get("/api/context/private")
+    async def _ctx_private():
+        """有私聊记录或私聊上下文的 QQ 号（两者都要看，见 db.list_private_users）。"""
+        return _json({"ok": True, "users": db.list_private_users()})
+
+    @app.get("/api/context/private/messages")
+    async def _ctx_private_messages(user_id: str, limit: int = 60, offset: int = 0):
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
+        return _json(
+            {
+                "ok": True,
+                "messages": db.recent_private_messages(user_id, limit, offset),
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+    @app.post("/api/context/private/clear")
+    async def _ctx_private_clear(request: Request):
+        """scope: sessions（重置上下文）| messages（删私聊记录）| both。
+
+        只动 `group_id IS NULL` 的私聊消息和 `user:<uid>` 上下文，
+        **不会碰这个人在各群里的发言** —— 那要走 /api/context/clear，
+        两者刻意分开，避免“只想重置私聊上下文，结果把群语料也删了”。
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        user_id = str(body.get("user_id") or "").strip()
+        if not user_id:
+            return _json({"ok": False, "error": "缺少 user_id"}, status=400)
+        scope = str(body.get("scope") or "sessions")
+        if scope not in ("sessions", "messages", "both"):
+            return _json({"ok": False, "error": f"未知 scope：{scope}"}, status=400)
+
+        deleted = cleared = 0
+        if scope in ("messages", "both"):
+            deleted = db.delete_messages(user_id=user_id, private_only=True)
+        if scope in ("sessions", "both"):
+            cleared = db.clear_sessions(user_id=user_id)
+
+        logger.info(
+            f"admin_panel: 私聊清理 user={user_id} scope={scope} "
+            f"-> 消息 {deleted} / 上下文 {cleared}"
         )
         return _json(
             {"ok": True, "deleted_messages": deleted, "cleared_sessions": cleared}

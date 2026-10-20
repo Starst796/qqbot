@@ -24,5 +24,8 @@ bot/.env
 napcat/data/
 napcat/QQ/
 
+# NapCat 编排的多实例变量（项目名/容器名/端口）。每套实例各一份，不进仓库。
+napcat/.env
+
 # 部署产物
 deploy/out/

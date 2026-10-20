@@ -12,15 +12,20 @@ OneBot 侧采用「主动连接」模式——NapCat 提供正向 WebSocket 服�
 
 from __future__ import annotations
 
+import os
+
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 
 def main() -> None:
-    # host/port 承载管理面板；真实密钥与 OneBot 地址来自同目录 .env
+    # host/port 承载管理面板；真实密钥与 OneBot 地址来自同目录 .env。
+    # 端口读环境变量 `PORT`（`.env` 里已有这一项，systemd 用 EnvironmentFile 注入）：
+    # 同一份代码要能同时跑主实例和面板端口不同的测试实例，硬编码会让两套实例
+    # 抢同一个端口。注意手动 `python bot.py` 而又没 export PORT 时会回落 8081。
     nonebot.init(
         host="127.0.0.1",
-        port=8081,
+        port=int(os.environ.get("PORT", "8081")),
         fastapi_reload=False,
     )
 

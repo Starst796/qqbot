@@ -827,6 +827,73 @@ def list_groups() -> list[dict[str, Any]]:
     ]
 
 
+def list_private_users() -> list[dict[str, Any]]:
+    """列出有私聊记录的 QQ 号及其统计。
+
+    「私聊」在 messages 表里就是 `group_id IS NULL`。
+    ⚠️ `storage.log_private` 默认**关闭** —— 那时 messages 里根本没有私聊记录，
+    但 `sessions`（对话上下文）照旧会写。所以这里必须**两边都看**，
+    否则会出现“上下文明明在、管理页却看不到这个人”。
+    """
+    conn = connect()
+    with _lock:
+        msg_rows = list(
+            conn.execute(
+                "SELECT user_id, COUNT(*) AS messages, SUM(is_bot) AS bot_messages, "
+                "MAX(ts) AS last_ts FROM messages WHERE group_id IS NULL "
+                "GROUP BY user_id"
+            )
+        )
+        # 按 id 升序遍历，后写的昵称覆盖前面的 —— 最后留下的是最新昵称
+        nick_rows = list(
+            conn.execute(
+                "SELECT user_id, nickname FROM messages "
+                "WHERE group_id IS NULL AND nickname IS NOT NULL AND nickname != '' "
+                "ORDER BY id"
+            )
+        )
+        sess_rows = list(
+            conn.execute(
+                "SELECT substr(conv_key, 6) AS uid, COUNT(*) AS turns, "
+                "MAX(ts) AS last_ts FROM sessions "
+                "WHERE conv_key LIKE 'user:%' GROUP BY conv_key"
+            )
+        )
+
+    nicks: dict[str, str] = {
+        str(r["user_id"]): str(r["nickname"]) for r in nick_rows
+    }
+    rows: dict[str, dict[str, Any]] = {}
+    for r in msg_rows:
+        uid = str(r["user_id"])
+        rows[uid] = {
+            "user_id": uid,
+            "nickname": nicks.get(uid, ""),
+            "messages": int(r["messages"]),
+            "bot_messages": int(r["bot_messages"] or 0),
+            "sessions": 0,
+            "last_ts": float(r["last_ts"]) if r["last_ts"] else None,
+        }
+    for r in sess_rows:
+        uid = str(r["uid"])
+        row = rows.setdefault(
+            uid,
+            {
+                "user_id": uid,
+                "nickname": nicks.get(uid, ""),
+                "messages": 0,
+                "bot_messages": 0,
+                "sessions": 0,
+                "last_ts": None,
+            },
+        )
+        row["sessions"] = int(r["turns"])
+        sess_ts = float(r["last_ts"]) if r["last_ts"] else None
+        if sess_ts and (row["last_ts"] is None or sess_ts > row["last_ts"]):
+            row["last_ts"] = sess_ts
+    return sorted(rows.values(), key=lambda x: -(x["last_ts"] or 0.0))
+
+
 def recent_messages(
     group_id: str, limit: int = 50, offset: int = 0
 ) -> list[dict[str, Any]]:
@@ -843,13 +910,35 @@ def recent_messages(
     return [dict(r) for r in rows]
 
 
+def recent_private_messages(
+    user_id: str, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    """某个用户与机器人的私聊消息（私聊 = `group_id IS NULL`），按时间倒序。"""
+    conn = connect()
+    with _lock:
+        rows = list(
+            conn.execute(
+                "SELECT id, user_id, nickname, content, ts, is_bot FROM messages "
+                "WHERE group_id IS NULL AND user_id = ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                (str(user_id), max(1, limit), max(0, offset)),
+            )
+        )
+    return [dict(r) for r in rows]
+
+
 def delete_messages(
     *,
     group_id: str | None = None,
     user_id: str | None = None,
     ids: list[int] | None = None,
+    private_only: bool = False,
 ) -> int:
-    """删除消息（含其向量）。三者都不给 = 清空全部。返回删除条数。"""
+    """删除消息（含其向量）。三者都不给 = 清空全部。返回删除条数。
+
+    `private_only=True` 且给了 `user_id` 时只删**私聊**（`group_id IS NULL`），
+    不会动这个人在各群里的发言 —— 面板的私聊管理靠它。
+    """
     conn = connect()
     with _lock:
         if ids:
@@ -860,7 +949,13 @@ def delete_messages(
         elif group_id is not None:
             cur = conn.execute("DELETE FROM messages WHERE group_id = ?", (group_id,))
         elif user_id is not None:
-            cur = conn.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
+            if private_only:
+                cur = conn.execute(
+                    "DELETE FROM messages WHERE user_id = ? AND group_id IS NULL",
+                    (user_id,),
+                )
+            else:
+                cur = conn.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
         else:
             cur = conn.execute("DELETE FROM messages")
         removed = int(cur.rowcount or 0)
