@@ -24,6 +24,7 @@ import json
 import os
 import re
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +177,118 @@ async def _napcat_webui(path: str, payload: dict | None = None, timeout: float =
         timeout,
         headers={"Authorization": f"Bearer {cred}"},
     )
+
+
+# 二维码一般 1~2 分钟过期；超过这个年龄就不再当作可扫的图
+QR_MAX_AGE_SEC = 180
+# 登录状态轮询很频繁，缓存几秒，避免面板每次都去登录 WebUI
+_LOGIN_CACHE_TTL = 8.0
+_login_cache: tuple[float, dict[str, Any]] = (0.0, {})
+
+
+def _qr_info() -> dict[str, Any] | None:
+    """二维码文件信息（含是否过期）。"""
+    path = _qr_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    age = max(0.0, time.time() - st.st_mtime)
+    return {
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+        "age": round(age, 1),
+        "stale": age > QR_MAX_AGE_SEC,
+    }
+
+
+async def _napcat_login(force: bool = False) -> dict[str, Any]:
+    """读 NapCat 的登录状态（带短缓存）。失败时返回空字典，不抛异常。"""
+    global _login_cache
+    now = time.monotonic()
+    cached_at, cached = _login_cache
+    if cached and not force and now - cached_at < _LOGIN_CACHE_TTL:
+        return cached
+
+    res = await _napcat_webui("/QQLogin/CheckLoginStatus", {}, timeout=8)
+    data: dict[str, Any] = {}
+    if isinstance(res, dict) and res.get("code") == 0:
+        payload = res.get("data")
+        if isinstance(payload, dict):
+            data = payload
+    _login_cache = (now, data)
+    return data
+
+
+def _login_cache_reset() -> None:
+    global _login_cache
+    _login_cache = (0.0, {})
+
+
+async def _wait_qrcode(timeout: float) -> str:
+    """轮询登录状态，直到出现二维码 URL；超时返回空串。"""
+    deadline = time.time() + max(1.0, timeout)
+    while time.time() < deadline:
+        data = await _napcat_login(force=True)
+        url = str(data.get("qrcodeurl") or "")
+        if url:
+            return url
+        await asyncio.sleep(3.0)
+    return ""
+
+
+async def _obtain_qrcode() -> tuple[str, dict[str, Any], str]:
+    """尽最大努力拿到一个可扫的二维码。
+
+    返回 (二维码 URL, 登录状态, 失败原因)。失败原因会直接展示给使用者，
+    所以必须写人话，而不是把 NapCat 的 `{'code': -1, ...}` 原样抛出去。
+
+    NapCat 的 QQ 内核有时会在“被踢下线”后卡住：进程在跑、但登录服务没有初始化，
+    这时 `GetQQLoginQrcode` 只会回 `QRCode Get Error`。处理顺序：
+      1. 状态里已经有二维码 → 直接用；
+      2. 让内核重新取一次图（RefreshQRcode）；
+      3. 仍没有 → 重启 NapCat 登录进程（RestartNapCat，不动容器）；
+      4. 仍没有 → 给出需要清登录缓存的明确提示。
+    """
+    status = await _napcat_login(force=True)
+    url = str(status.get("qrcodeurl") or "")
+    if url:
+        return url, status, ""
+
+    res = await _napcat_webui("/QQLogin/GetQQLoginQrcode", {}, timeout=20)
+    if isinstance(res, dict) and res.get("code") == 0:
+        data = res.get("data") or {}
+        url = str(data.get("qrcode") or "") if isinstance(data, dict) else ""
+        if url:
+            return url, status, ""
+
+    # 二维码 URL 为空说明内核还没生成过图，刷新一次比直接重启温和
+    await _napcat_webui("/QQLogin/RefreshQRcode", {}, timeout=20)
+    url = await _wait_qrcode(15)
+    if url:
+        return url, await _napcat_login(), ""
+
+    logger.warning("admin_panel: 二维码仍为空，重启 NapCat 登录进程")
+    await _napcat_webui("/QQLogin/RestartNapCat", {}, timeout=30)
+    url = await _wait_qrcode(45)
+    status = await _napcat_login()
+    if url:
+        return url, status, ""
+
+    phase = str(status.get("loginPhase") or "unknown")
+    detail = str(status.get("loginError") or "").strip()
+    hint = (
+        "NapCat 的 QQ 内核没有初始化登录服务（常见于账号被踢下线后）。"
+        "已自动尝试 RefreshQRcode 和重启登录进程，仍未拿到二维码。"
+    )
+    if detail:
+        hint += f" 内核报错：{detail}"
+    hint += (
+        " 若持续失败，请在服务器上停容器，删除 "
+        "napcat/data/QQ/nt_qq/global/nt_data/Login 下的账号文件与 .MSFSDKDataDir 目录，"
+        "再启动容器重新扫码（只会重建登录态，不动聊天记录）。"
+    )
+    return "", status, f"{hint}（当前阶段：{phase}）"
 
 
 async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str]:
@@ -709,11 +822,8 @@ def _register(app) -> None:
         except Exception:  # noqa: BLE001
             bots = []
 
-        qr_info = None
-        qr_file = _qr_path()
-        if qr_file.exists():
-            st = qr_file.stat()
-            qr_info = {"mtime": st.st_mtime, "size": st.st_size}
+        qr_info = _qr_info()
+        login = {} if bots else await _napcat_login()
 
         if _napcat_mode() != "docker":
             # 原生模式（如 Windows 直跑 NapCat）：没有容器，改读 NapCat 自己的日志目录
@@ -725,6 +835,7 @@ def _register(app) -> None:
                     "mode": "native",
                     "container": "原生模式（未使用 Docker）",
                     "qr": qr_info,
+                    "login": login,
                     "log": _native_logs(),
                 }
             )
@@ -743,15 +854,30 @@ def _register(app) -> None:
                 "mode": "docker",
                 "container": state.strip() if rc_state == 0 else "unknown",
                 "qr": qr_info,
+                "login": login,
                 "log": _clean_napcat_log(logs) if rc_log == 0 else [],
             }
         )
 
     @app.get("/api/napcat/qr")
     async def _napcat_qr():
-        """把容器里的登录二维码原样吐给浏览器（no-store，Always 取最新的）。"""
-        if not _qr_path().exists():
+        """把容器里的登录二维码原样吐给浏览器（no-store，Always 取最新的）。
+
+        过期的图（>`QR_MAX_AGE_SEC`）不再返回：NapCat 登录态卡住时，
+        cache/qrcode.png 会一直停在几天前，浏览器照样显示出来，扫码只会失败。
+        """
+        info = _qr_info()
+        if info is None:
             return _json({"ok": False, "error": "暂无二维码文件"}, status=404)
+        if info["stale"]:
+            return _json(
+                {
+                    "ok": False,
+                    "error": f"二维码已过期（{int(info['age'])} 秒前生成），请点「获取/刷新二维码」",
+                    "stale": True,
+                },
+                status=409,
+            )
         try:
             data = _qr_path().read_bytes()
         except OSError as exc:
@@ -766,16 +892,41 @@ def _register(app) -> None:
     async def _napcat_refresh_qr():
         """向 NapCat WebUI API 索取登录二维码（会写入 cache/qrcode.png）。
 
-        比重启容器温和：不丢登录态、不断开连接，失败时二维码仍可扫码。
+        比重启容器温和：不丢登录态、不断开连接，失败时旧二维码仍可扫码。
+        NapCat 内核没起来时会回 `QRCode Get Error`，这里会自动刷新/重启登录进程，
+        并把真正的原因翻成人话——面板不该只弹一个 `{'code': -1}`。
         """
-        res = await _napcat_webui("/QQLogin/GetQQLoginQrcode")
-        if not isinstance(res, dict) or res.get("code") != 0:
-            logger.warning(f"admin_panel: 获取登录二维码失败：{res}")
-            return _json({"ok": False, "error": str(res)[:300]}, status=502)
-        data = res.get("data") or {}
-        url = data.get("qrcode") if isinstance(data, dict) else ""
+        try:
+            url, status, reason = await _obtain_qrcode()
+        except Exception as exc:  # noqa: BLE001 —— WebUI 不可达等
+            logger.warning(f"admin_panel: 获取登录二维码异常：{type(exc).__name__}: {exc}")
+            return _json(
+                {"ok": False, "error": f"连接 NapCat WebUI 失败：{type(exc).__name__}: {exc}"},
+                status=502,
+            )
+
+        if not url:
+            logger.warning(f"admin_panel: 获取登录二维码失败：{reason}")
+            return _json(
+                {
+                    "ok": False,
+                    "error": reason or "获取二维码失败",
+                    "login": status,
+                    "qr": _qr_info(),
+                },
+                status=503,
+            )
+
         logger.info("admin_panel: 已获取登录二维码")
-        return _json({"ok": True, "qrcode": url or "", "message": "二维码已生成"})
+        return _json(
+            {
+                "ok": True,
+                "qrcode": url,
+                "qr": _qr_info(),
+                "login": status,
+                "message": "二维码已生成",
+            }
+        )
 
     @app.post("/api/napcat/restart")
     async def _napcat_restart():
@@ -789,6 +940,8 @@ def _register(app) -> None:
                 status=501,
             )
         rc, out = await _docker("restart", _qq_container(), timeout=120)
+        # 容器重启后登录状态一定变了，别让缓存继续撒谎
+        _login_cache_reset()
         logger.info(f"admin_panel: 重启 NapCat 容器 rc={rc}")
         if rc != 0:
             return _json({"ok": False, "error": out.strip()[:500]}, status=500)
