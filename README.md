@@ -159,6 +159,28 @@ qqbot/
 - **面板**：列表/筛选/上传/批准/停用/设人设/改标签/删除；
   配置项在「表情包设置」里，保存即热生效。
 
+## 二维码 / 登录排障
+
+面板「获取/刷新二维码」失败时，常见现象与处理：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `QRCode Get Error` | NapCat 的 QQ 内核没初始化登录服务（典型场景：账号被踢下线后，QQ 进程还在，但登录流程没重跑） | 面板会自动依次尝试 `RefreshQRcode` → `RestartNapCat` 并轮询最多约 1 分钟；仍失败才给出手动清理提示 |
+| 二维码能显示但扫码无效 | 面板曾把几天前的 `cache/qrcode.png` 当有效图展示 | 超过 180 秒的二维码不再展示，`/api/napcat/qr` 直接返回 409 |
+
+手动兜底（只重建登录态，**不动聊天记录**）：
+
+```bash
+docker stop qqbot-napcat
+rm -f  napcat/data/QQ/nt_qq/global/nt_data/Login/.<QQ号>
+rm -rf napcat/data/QQ/nt_qq/global/nt_data/.MSFSDKDataDir
+docker start qqbot-napcat
+```
+
+`/api/napcat/status` 会返回 `login.loginPhase`（`waiting_qrcode` / `generating_qrcode` /
+`qrcode_scanned` / `initializing` / `ready` / `reconnecting` / `offline`）与
+`login.loginError`，面板顶部直接显示，不用再翻日志猜。
+
 **群功能开关（`groups`）**
 
 - 面板「群功能开关与数据管理」里每群一个勾选框，写回 `groups.enabled`（群号 -> bool），**即时生效**；
