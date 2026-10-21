@@ -101,6 +101,22 @@ DEFAULTS: dict[str, Any] = {
         "max_mb": 5.0,        # 单张图片大小上限
         "timeout_sec": 20,    # 单张下载超时
     },
+    # ---- 识图工具（被 @ 且问到识图时由模型调用）----
+    # 不单独做触发 matcher：沿用 ai_chat 的 @ 触发和工具循环。
+    # 密钥不进这里，放 bot/.env（面板“识图”卡片写入），因为 /api/config 会原样返回。
+    "image_search": {
+        "enabled": True,
+        # 按顺序尝试；前一个没结果或失败才走下一个。
+        "providers": ["serpapi", "saucenao"],
+        "max_results": 3,
+        # 要小于 llm_tools.timeout_sec（默认 25），否则工具会先被外层超时掐掉。
+        "timeout_sec": 18,
+        "max_image_mb": 8,
+        "safe_search": True,
+        "result_title": "识图结果",
+        "disclaimer": "⚠️ 识图存在误差，请自行核对哦~",
+        "show_source": True,
+    },
     # ---- 群功能开关（只控制机器人是否在该群说话，不影响语料入库）----
     "groups": {
         "default_enabled": True,  # 没在 enabled 里单独写的群是否响应

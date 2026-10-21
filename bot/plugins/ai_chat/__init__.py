@@ -37,7 +37,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 
-from qqbot_core import activity, config, db, stickers, tools
+from qqbot_core import activity, config, db, stickers, tools, vision_context
 from qqbot_core.media import fetch_data_uri, image_sources, placeholders, reply_ids
 
 driver = get_driver()
@@ -379,6 +379,14 @@ async def _tool_loop(messages: list[dict], cfg: dict, question: str) -> str:
             else:
                 logger.info(f"ai_chat: 调用工具 {name}({args})")
                 result = await tools.call(tool, args)
+                # 工具可以返回 direct_reply（目前是 image_search 的结果卡）：
+                # 直接把它当最终答复，不再让模型改写账号/平台，也省一轮调用。
+                try:
+                    parsed_result = json.loads(result)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_result = None
+                if isinstance(parsed_result, dict) and parsed_result.get("direct_reply"):
+                    return str(parsed_result["direct_reply"]).strip()
                 if name == tools.FIND_TOOL:
                     # tools_find 命中后，把发现的延迟工具加进本轮可用集合
                     for extra in tools.match_deferred(str(args.get("query") or "")):
@@ -871,6 +879,10 @@ def _split_reply(text: str, cfg: dict) -> list[str]:
     text = (text or "").strip()
     if not text:
         return []
+    # 识图结果卡是多行固定版式，拆开会把「平台/名字/账号」拆成几条，
+    # 直接整条发出；这里只认工具生成的版式，不影响普通聊天。
+    if text.startswith("🎯 ") and "🌐 平台：" in text and "🔍 匹配：" in text:
+        return [text]
     if not cfg.get("split_long", True):
         # “整条一次发出”也该是一个干净的单条，不能把空行原样塞进去
         return [_flatten(text)]
@@ -1029,11 +1041,17 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
             if _tools_enabled_for(event):
                 token = _current_group.set(group_id or "")
                 sticker_token = _pending_sticker.set([])
+                # 工具拿不到 OneBot 事件，把当前消息（含引用）的图片地址放进
+                # ContextVar，供 image_search 等工具读取；本轮结束必须 reset。
+                image_token = vision_context.current_image_sources.set(
+                    tuple(image_sources(event.message) + [s for s in quoted_images if s])
+                )
                 try:
                     answer = await _tool_loop(messages, cfg, question)
                     pending = _pending_sticker.get() or []
                     pending_id = pending[0] if pending else None
                 finally:
+                    vision_context.current_image_sources.reset(image_token)
                     _pending_sticker.reset(sticker_token)
                     _current_group.reset(token)
             else:

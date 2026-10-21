@@ -6,3 +6,4 @@ openai>=1.40.0
 numpy>=1.26.0
 sentence-transformers>=3.0.0
 httpx>=0.27.0
+tzdata

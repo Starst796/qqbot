@@ -7,6 +7,8 @@
   GET  /            -> 面板页面
   GET  /api/config  -> 当前配置
   POST /api/config  -> 覆盖写入配置（热生效）
+  GET  /api/secrets -> 识图等密钥的配置状态（只回尾号，不回完整 key）
+  POST /api/secrets -> 写入 .env 并热更新当前进程的密钥
   GET  /api/stats   -> 运行统计
   POST /api/reload  -> 让 RAG 缓存失效（删数据后调用）
   GET  /api/context/groups -> 已加入的群 + 每群统计与开关状态
@@ -35,7 +37,7 @@ from fastapi import Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from nonebot import get_bots, get_driver, logger
 
-from qqbot_core import config, db, stickers
+from qqbot_core import config, db, secrets, stickers
 
 driver = get_driver()
 
@@ -408,6 +410,42 @@ def _register(app) -> None:
         saved = config.save(body)
         logger.info("admin_panel: 配置已更新")
         return _json({"ok": True, "config": saved})
+
+    @app.get("/api/secrets")
+    async def _get_secrets():
+        return _json({"ok": True, "secrets": secrets.status()})
+
+    @app.post("/api/secrets")
+    async def _post_secrets(request: Request):
+        """写 `.env` 并同步 os.environ；只接受白名单里的 key。
+
+        空字符串表示删除该 key。响应与 GET 一样只返回配置状态，不回显密钥。
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _json({"ok": False, "error": "请求体不是合法 JSON"}, status=400)
+        if not isinstance(body, dict):
+            return _json({"ok": False, "error": "请求体必须是对象"}, status=400)
+
+        updates: dict[str, str] = {}
+        for key in secrets.ALLOWED_KEYS:
+            if key not in body:
+                continue
+            value = body.get(key)
+            if not isinstance(value, str):
+                return _json({"ok": False, "error": f"{key} 必须是字符串"}, status=400)
+            updates[key] = value
+        if not updates:
+            return _json({"ok": False, "error": "没有可保存的密钥"}, status=400)
+
+        try:
+            secrets.set_many(updates)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(f"admin_panel: 密钥写入失败：{type(exc).__name__}: {exc}")
+            return _json({"ok": False, "error": "密钥写入失败，请检查 .env 权限"}, status=500)
+        logger.info("admin_panel: 识图密钥已更新")
+        return _json({"ok": True, "secrets": secrets.status()})
 
     @app.get("/api/stats")
     async def _stats():

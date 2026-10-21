@@ -152,6 +152,23 @@
   </section>
 
   <section class="card" data-page="chat">
+    <h2>识图（@ 时工具调用）</h2>
+    <div class="row"><label>启用识图</label><input type="checkbox" id="image_search.enabled" /></div>
+    <div class="row"><label>最多候选</label><input type="number" id="image_search.max_results" min="1" max="5" /></div>
+    <div class="row"><label>SerpAPI Key</label><input type="password" id="secretSerpapiKey" placeholder="未配置" autocomplete="off" spellcheck="false" /></div>
+    <div class="row"><label>SauceNAO Key</label><input type="password" id="secretSaucenaoKey" placeholder="未配置" autocomplete="off" spellcheck="false" /></div>
+    <div class="actions-inline">
+      <button class="ghost" id="btnSaveSecrets">保存识图密钥</button>
+      <button class="ghost" id="btnClearSecrets">清除两个密钥</button>
+      <span class="hint2" id="secretsState"></span>
+    </div>
+    <p class="hint">只有被 @ 且问到「识图 / 找图 / 这是谁 / 出处 / 账号 / 推特」时，
+      模型才会尝试调用 <code>image_search</code>。Key 写入 <code>bot/.env</code>，保存即生效；
+      面板只显示尾号，不会回显完整密钥。SerpAPI 需要图片有公网地址；SauceNAO 可接收文件，
+      所以两者至少配一个。没配时模型会如实说没配好，不会编造账号。</p>
+  </section>
+
+  <section class="card" data-page="chat">
     <h2>限流与话痨度</h2>
     <div class="row"><label>每群每分钟最多说</label><input type="number" id="rate_limit.per_group_per_minute" min="0" /></div>
     <div class="row"><label>同群最小间隔(秒)</label><input type="number" id="rate_limit.per_group_seconds" min="0" /></div>
@@ -498,6 +515,83 @@ async function loadConfig() {
   $("meta").textContent = "配置已加载";
 }
 
+function applySecretsState(state) {
+  const serp = (state && state.SERPAPI_KEY) || {};
+  const sauceNao = (state && state.SAUCENAO_API_KEY) || {};
+  $("secretSerpapiKey").placeholder = serp.configured
+    ? `已配置 ${serp.preview}；留空不修改`
+    : "未配置，粘贴 SerpAPI Key";
+  $("secretSaucenaoKey").placeholder = sauceNao.configured
+    ? `已配置 ${sauceNao.preview}；留空不修改`
+    : "未配置，粘贴 SauceNAO Key";
+  const labels = [
+    serp.configured ? `SerpAPI ${serp.preview}` : "SerpAPI 未配置",
+    sauceNao.configured ? `SauceNAO ${sauceNao.preview}` : "SauceNAO 未配置",
+  ];
+  $("secretsState").textContent = labels.join(" · ");
+}
+
+async function loadSecrets() {
+  try {
+    const r = await fetch("/api/secrets");
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "读取密钥状态失败");
+    applySecretsState(d.secrets || {});
+  } catch (e) {
+    $("secretsState").textContent = "读取密钥状态失败";
+  }
+}
+
+async function saveSecrets(payload) {
+  const r = await fetch("/api/secrets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json();
+  if (!d.ok) throw new Error(d.error || "保存失败");
+  applySecretsState(d.secrets || {});
+  return d;
+}
+
+$("btnSaveSecrets").onclick = async () => {
+  const body = {};
+  const serp = $("secretSerpapiKey").value.trim();
+  const sauce = $("secretSaucenaoKey").value.trim();
+  if (serp) body.SERPAPI_KEY = serp;
+  if (sauce) body.SAUCENAO_API_KEY = sauce;
+  if (!Object.keys(body).length) {
+    toast("先填一个 Key", true);
+    return;
+  }
+  $("btnSaveSecrets").disabled = true;
+  try {
+    await saveSecrets(body);
+    $("secretSerpapiKey").value = "";
+    $("secretSaucenaoKey").value = "";
+    toast("识图密钥已保存，立即生效");
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    $("btnSaveSecrets").disabled = false;
+  }
+};
+
+$("btnClearSecrets").onclick = async () => {
+  if (!confirm("清除 SerpAPI 和 SauceNAO 两个识图密钥？")) return;
+  $("btnClearSecrets").disabled = true;
+  try {
+    await saveSecrets({ SERPAPI_KEY: "", SAUCENAO_API_KEY: "" });
+    $("secretSerpapiKey").value = "";
+    $("secretSaucenaoKey").value = "";
+    toast("识图密钥已清除");
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    $("btnClearSecrets").disabled = false;
+  }
+};
+
 async function loadStats() {
   const r = await fetch("/api/stats");
   const d = await r.json();
@@ -574,6 +668,7 @@ function initialPage() {
 showPage(initialPage());
 
 loadConfig();
+loadSecrets();
 loadStats();
 setInterval(loadStats, 15000);
 
