@@ -1052,6 +1052,16 @@ loadTools();
 // ---------------- QQ / NapCat 登录状态 ----------------
 let lastQrMtime = 0;
 
+const LOGIN_PHASE = {
+  waiting_qrcode: "等待扫码",
+  generating_qrcode: "正在生成二维码",
+  qrcode_scanned: "已扫码，等待确认",
+  initializing: "正在初始化",
+  ready: "已登录",
+  reconnecting: "登录服务重连中",
+  offline: "登录服务离线",
+};
+
 async function loadNapcat() {
   try {
     const r = await fetch("/api/napcat/status");
@@ -1061,22 +1071,30 @@ async function loadNapcat() {
     const native = d.mode === "native";
     $("btnNapcatRestart").disabled = native;
     $("btnNapcatRestart").title = native ? "原生模式下请手动重启 NapCat 进程" : "";
+    const login = d.login || {};
+    const phase = LOGIN_PHASE[login.loginPhase] || "";
     if (d.online) {
       st.textContent = `在线 · QQ ${d.bots.join(" / ")} · 容器 ${d.container}`;
       st.style.color = "var(--ok)";
       $("qrBox").style.display = "none";
       lastQrMtime = 0;
     } else {
-      st.textContent = d.qr
-        ? `离线 · 容器 ${d.container} · 二维码更新于 ${fmtTime(d.qr.mtime)}`
-        : `离线 · 容器 ${d.container} · 暂无二维码（点「重新登录」生成）`;
-      st.style.color = "#f85149";
-      if (d.qr) {
+      const tail = phase ? ` · ${phase}` : "";
+      st.textContent = d.qr && !d.qr.stale
+        ? `离线 · 容器 ${d.container} · 二维码更新于 ${fmtTime(d.qr.mtime)}${tail}`
+        : `离线 · 容器 ${d.container} · 暂无可用二维码（点「获取/刷新二维码」）${tail}`;
+      st.style.color = login.loginError ? "var(--warn)" : "#f85149";
+      if (login.loginError) st.textContent += ` · ${login.loginError}`;
+      // 过期的图不要显示：扫码只会失败，还让人以为机器人只是没连上
+      if (d.qr && !d.qr.stale) {
         $("qrBox").style.display = "block";
         if (d.qr.mtime !== lastQrMtime) {
           lastQrMtime = d.qr.mtime;
           $("qrImg").src = "/api/napcat/qr?t=" + Math.round(d.qr.mtime);
         }
+      } else {
+        $("qrBox").style.display = "none";
+        lastQrMtime = 0;
       }
     }
     $("napcatLog").textContent = (d.log || []).join("\n") || "（无日志）";
@@ -1086,7 +1104,9 @@ async function loadNapcat() {
 }
 
 $("btnQr").onclick = async () => {
-  $("qqState").textContent = "正在获取二维码…";
+  // 后端在内核卡住时最多会等 ~60 秒（刷新 + 重启登录进程），按钮先禁用避免重复点击
+  $("btnQr").disabled = true;
+  $("qqState").textContent = "正在获取二维码…（内核卡住时会自动重启登录进程，最多约 1 分钟）";
   $("qqState").style.color = "var(--warn)";
   try {
     const r = await fetch("/api/napcat/refresh-qr", { method: "POST" });
@@ -1095,15 +1115,19 @@ $("btnQr").onclick = async () => {
     if (d.qrcode) $("qrLink").href = d.qrcode;
     toast("二维码已更新，请在 1~2 分钟内扫码");
   } catch (e) {
+    // 后端可能已经自动 刷新→重启登录进程 过一轮，这里顺带把最新状态刷出来
+    await loadNapcat();
     return toast(e.message, true);
+  } finally {
+    $("btnQr").disabled = false;
   }
   lastQrMtime = 0;
   let tries = 0;
   const tick = setInterval(async () => {
     tries++;
     await loadNapcat();
-    if (tries >= 8) clearInterval(tick);
-  }, 2000);
+    if (tries >= 10) clearInterval(tick);
+  }, 3000);
 };
 
 $("btnNapcatRestart").onclick = async () => {
