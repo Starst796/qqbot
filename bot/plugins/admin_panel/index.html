@@ -155,6 +155,13 @@
     <h2>识图（@ 时工具调用）</h2>
     <div class="row"><label>启用识图</label><input type="checkbox" id="image_search.enabled" /></div>
     <div class="row"><label>最多候选</label><input type="number" id="image_search.max_results" min="1" max="5" /></div>
+    <div class="row"><label>SerpAPI 引擎</label>
+      <select id="image_search.serpapi_engine">
+        <option value="bing_reverse_image">bing_reverse_image —— Bing 反向图搜</option>
+        <option value="yandex_images">yandex_images —— Yandex 反向图搜（推荐）</option>
+        <option value="google_lens">google_lens —— Google Lens</option>
+      </select>
+    </div>
     <div class="row"><label>SerpAPI Key</label><input type="password" id="secretSerpapiKey" placeholder="未配置" autocomplete="off" spellcheck="false" /></div>
     <div class="row"><label>SauceNAO Key</label><input type="password" id="secretSaucenaoKey" placeholder="未配置" autocomplete="off" spellcheck="false" /></div>
     <div class="actions-inline">
@@ -164,8 +171,10 @@
     </div>
     <p class="hint">只有被 @ 且问到「识图 / 找图 / 这是谁 / 出处 / 账号 / 推特」时，
       模型才会尝试调用 <code>image_search</code>。Key 写入 <code>bot/.env</code>，保存即生效；
-      面板只显示尾号，不会回显完整密钥。SerpAPI 需要图片有公网地址；SauceNAO 可接收文件，
-      所以两者至少配一个。没配时模型会如实说没配好，不会编造账号。</p>
+      面板只显示尾号，不会回显完整密钥。SerpAPI 选 <code>bing_reverse_image</code> 或
+      <code>yandex_images</code> 时对敏感图更稳；<code>google_lens</code> 可能被 Google 内容准则直接拒绝。
+      SerpAPI 需要图片有公网地址；SauceNAO 可接收文件，所以两者至少配一个。
+      没配时模型会如实说没配好，不会编造账号。</p>
   </section>
 
   <section class="card" data-page="chat">

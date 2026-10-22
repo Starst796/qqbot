@@ -108,6 +108,10 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         # 按顺序尝试；前一个没结果或失败才走下一个。
         "providers": ["serpapi", "saucenao"],
+        # SerpAPI 的 engine：google_lens / yandex_images / bing_reverse_image。
+        # Google Lens 对敏感图会按内容准则直接拒绝，Yandex/Bing 通常还能返回来源。
+        "serpapi_engine": "yandex_images",
+        "bing_market": "en-US",
         "max_results": 3,
         # 要小于 llm_tools.timeout_sec（默认 25），否则工具会先被外层超时掐掉。
         "timeout_sec": 18,
@@ -239,7 +243,7 @@ DEFAULTS: dict[str, Any] = {
             "ignored_groups": [],
             "ignored_users": [],
             # 只允许从 QQ 图床下载，避免任意 URL / SSRF
-            "host_allowlist": ["qpic.cn", "qq.com", "tencent.com"],
+            "host_allowlist": ["qq.com.cn","qpic.cn", "qq.com", "tencent.com"],
         },
         # 用视觉模型给审核通过的图打情绪标签（会产生模型调用；默认关闭）
         "tagging": {"enabled": False},

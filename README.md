@@ -153,8 +153,13 @@ qqbot/
 
   ⚠️ 识图存在误差，请自行核对哦~
   ```
-- **provider**：按 `image_search.providers` 顺序尝试。`serpapi`（Google Lens，适合找
-  X/Twitter 账号）需要图片有公网地址；`saucenao` 直接收文件，适合动漫/cosplay 兜底。
+- **provider**：按 `image_search.providers` 顺序尝试。`serpapi` 支持
+  `image_search.serpapi_engine`：
+  - `bing_reverse_image`：Bing 反向图搜，结果在 `pages_with_this_image` / `related_content`，来源取 `source`；
+  - `yandex_images`：Yandex 反向图搜，结果在 `image_results`，对敏感图的拦截通常比 Google 宽；
+  - `google_lens`：Google Lens，结果更偏视觉匹配，但可能被 Google 内容准则直接拒绝。
+
+  `saucenao` 直接收文件，适合动漫/cosplay 兜底。
 - **密钥**：面板「识图」卡片填 `SERPAPI_KEY` / `SAUCENAO_API_KEY`，保存写入 `bot/.env` 并立即生效；
   `GET /api/secrets` 只回尾号，不把完整 key 返回浏览器。也可以直接改 `.env` 后重启。
 - **没配 key / 没搜到**：工具返回明确错误，模型会如实说没配好或没搜到，不编造账号。

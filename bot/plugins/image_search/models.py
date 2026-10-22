@@ -28,11 +28,13 @@ class Candidate:
     def score(self) -> float:
         value = max(0.0, min(1.0, float(self.confidence or 0.0))) * 100.0
         if "x (twitter)" in (self.platform or "").lower():
-            value += 25.0
+            value += 20.0
         if self.handle:
-            value += 15.0
-        if self.is_exact:
             value += 12.0
+        # 精确匹配的权重必须高于“平台是 X”的偏好，否则 Bing 的
+        # related_content 里一个无关 X 结果会压过真正的精确来源。
+        if self.is_exact:
+            value += 35.0
         if self.url:
             value += 5.0
         value -= max(0, int(self.position or 0)) * 0.5

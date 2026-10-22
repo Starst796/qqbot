@@ -137,6 +137,7 @@ def _serpapi_items(payload: dict) -> list[tuple[dict, bool, int]]:
         ("exact_matches", True),
         ("visual_matches", False),
         ("organic_results", False),
+        ("image_results", False),
     ):
         raw = payload.get(key)
         if not isinstance(raw, list):
@@ -238,6 +239,45 @@ def candidates_from_saucenao(payload: dict, limit: int = 3) -> list[Candidate]:
     return _rank(out, limit)
 
 
+def candidates_from_bing(payload: dict, limit: int = 3) -> list[Candidate]:
+    """纯函数：把 SerpAPI Bing Reverse Image JSON 转成候选列表。
+
+    Bing 的 `link` 是 Bing 自己的详情页，真正来源在 `source`，例如
+    `https://x.com/<handle>/status/...`，所以这里必须解析 `source`。
+    """
+    out: list[Candidate] = []
+    for group, exact in (
+        ("pages_with_this_image", True),
+        ("related_content", False),
+    ):
+        raw = payload.get(group)
+        if not isinstance(raw, list):
+            continue
+        for position, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            source = clean_text(item.get("source"))
+            platform, handle = platform_for_url(source)
+            if not platform:
+                continue
+            title = clean_text(item.get("title"))
+            handle = handle or handle_from_text(title)
+            out.append(
+                Candidate(
+                    platform=platform,
+                    name=extract_name(title, handle),
+                    handle=handle,
+                    url=normalize_url(source),
+                    match="精确匹配" if exact else "视觉匹配",
+                    confidence=(0.92 if exact else 0.8) - min(position, 20) * 0.01,
+                    source="Bing",
+                    is_exact=exact,
+                    position=position,
+                )
+            )
+    return _rank(out, limit)
+
+
 def _rank(candidates: list[Candidate], limit: int) -> list[Candidate]:
     """按可信度排序后去重（保留同 handle 里分最高的），最多返回 limit 条。"""
     ordered = sorted(candidates, key=lambda item: item.score(), reverse=True)
@@ -256,15 +296,29 @@ async def _serpapi_search(
         raise ProviderError("SerpAPI 需要图片公网地址，当前图片没有可用 URL。")
 
     cfg = _cfg()
-    params = {
-        "engine": "google_lens",
-        "type": "all",
-        "url": image.url,
-        "hl": "zh-cn",
-        "country": "cn",
-        "safe": "active" if cfg.get("safe_search", True) else "off",
-        "api_key": key,
-    }
+    engine = str(cfg.get("serpapi_engine") or "yandex_images").strip().lower()
+    if engine not in ("google_lens", "yandex_images", "bing_reverse_image"):
+        engine = "google_lens"
+
+    params = {"engine": engine, "api_key": key}
+    if engine == "bing_reverse_image":
+        params["image_url"] = image.url
+        params["mkt"] = str(cfg.get("bing_market") or "en-US")
+    elif engine == "yandex_images":
+        # 0=off / 1=moderate / 2=strict；关掉 safe_search 才能真正搜到敏感图。
+        params["url"] = image.url
+        params["family_mode"] = "2" if cfg.get("safe_search", True) else "0"
+        params["tab"] = "about"
+    else:
+        params.update(
+            {
+                "url": image.url,
+                "type": "all",
+                "hl": "zh-cn",
+                "country": "cn",
+                "safe": "active" if cfg.get("safe_search", True) else "off",
+            }
+        )
     try:
         response = await client.get(_SERPAPI_URL, params=params)
         if response.status_code in (401, 403):
@@ -277,9 +331,18 @@ async def _serpapi_search(
         raise ProviderError("SerpAPI 请求失败，请稍后再试。") from exc
 
     if isinstance(payload, dict) and payload.get("error"):
+        info = payload.get("search_information") or {}
+        state = str(info.get("images_results_state") or "")
+        message = str(payload.get("error") or "")
+        if "does not refer to an image" in message or "not publicly accessible" in message:
+            raise ProviderError("图片地址无法被搜索服务访问（QQ 图床链接过期或防盗链）。")
+        if state == "Fully empty" or "hasn't returned any results" in message:
+            raise ProviderError("SerpAPI 没有返回结果（可能被内容准则、安全搜索或地区限制拦截）。")
         raise ProviderError("SerpAPI 返回了错误，请检查 Key / 额度。")
     if not isinstance(payload, dict):
         raise ProviderError("SerpAPI 返回格式异常。")
+    if engine == "bing_reverse_image":
+        return candidates_from_bing(payload, limit)
     return candidates_from_serpapi(payload, limit)
 
 

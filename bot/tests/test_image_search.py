@@ -78,6 +78,43 @@ class ProviderParseTests(unittest.TestCase):
         self.assertEqual(items[0].name, "咪娅酱")
         self.assertEqual(items[0].match, "精确匹配")
 
+    def test_yandex_image_results(self):
+        payload = {
+            "image_results": [
+                {
+                    "title": "咪娅酱 (@mamamia1008) / X",
+                    "link": "https://x.com/mamamia1008/status/1",
+                    "source": "x.com",
+                }
+            ]
+        }
+        items = providers.candidates_from_serpapi(payload, 3)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].platform, "X (Twitter)")
+        self.assertEqual(items[0].handle, "mamamia1008")
+
+    def test_bing_image_results_use_source_field(self):
+        payload = {
+            "pages_with_this_image": [
+                {
+                    "title": "咪娅酱 (@mamamia1008) / X",
+                    "link": "https://www.bing.com/images/search?view=detailv2&id=...",
+                    "source": "https://x.com/mamamia1008/status/1",
+                }
+            ],
+            "related_content": [
+                {
+                    "title": "Other (@other) / X",
+                    "link": "https://www.bing.com/images/search?view=detailv2&id=...",
+                    "source": "https://twitter.com/other/status/2",
+                }
+            ],
+        }
+        items = providers.candidates_from_bing(payload, 3)
+        self.assertGreaterEqual(len(items), 2)
+        self.assertEqual(items[0].source, "Bing")
+        self.assertTrue(any(item.handle == "mamamia1008" for item in items))
+
     def test_saucenao(self):
         payload = {
             "results": [
@@ -216,6 +253,111 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(result.provider, "serpapi")
         self.assertEqual(result.best.handle, "mamamia1008")
+
+    async def test_yandex_engine_params(self):
+        captured: dict[str, str] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(dict(request.url.params))
+            return httpx.Response(
+                200,
+                json={
+                    "image_results": [
+                        {
+                            "title": "咪娅酱 (@mamamia1008) / X",
+                            "link": "https://x.com/mamamia1008/status/1",
+                            "source": "x.com",
+                        }
+                    ]
+                },
+            )
+
+        cfg = {
+            "enabled": True,
+            "providers": ["serpapi"],
+            "serpapi_engine": "yandex_images",
+            "max_results": 3,
+            "timeout_sec": 5,
+            "max_image_mb": 8,
+            "safe_search": False,
+        }
+        with patch.object(providers, "_cfg", return_value=cfg), patch.object(
+            secrets, "get", side_effect=lambda key: "k" if key == "SERPAPI_KEY" else ""
+        ):
+            result = await providers.search_image(
+                ["https://example.com/a.jpg"], transport=httpx.MockTransport(handler)
+            )
+        self.assertEqual(captured.get("engine"), "yandex_images")
+        self.assertEqual(captured.get("family_mode"), "0")
+        self.assertEqual(captured.get("tab"), "about")
+        self.assertEqual(result.best.handle, "mamamia1008")
+
+    async def test_bing_engine_params(self):
+        captured: dict[str, str] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(dict(request.url.params))
+            return httpx.Response(
+                200,
+                json={
+                    "pages_with_this_image": [
+                        {
+                            "title": "咪娅酱 (@mamamia1008) / X",
+                            "link": "https://www.bing.com/images/search?view=detailv2&id=...",
+                            "source": "https://x.com/mamamia1008/status/1",
+                        }
+                    ]
+                },
+            )
+
+        cfg = {
+            "enabled": True,
+            "providers": ["serpapi"],
+            "serpapi_engine": "bing_reverse_image",
+            "bing_market": "en-US",
+            "max_results": 3,
+            "timeout_sec": 5,
+            "max_image_mb": 8,
+            "safe_search": False,
+        }
+        with patch.object(providers, "_cfg", return_value=cfg), patch.object(
+            secrets, "get", side_effect=lambda key: "k" if key == "SERPAPI_KEY" else ""
+        ):
+            result = await providers.search_image(
+                ["https://example.com/a.jpg"], transport=httpx.MockTransport(handler)
+            )
+        self.assertEqual(captured.get("engine"), "bing_reverse_image")
+        self.assertEqual(captured.get("mkt"), "en-US")
+        self.assertEqual(captured.get("image_url"), "https://example.com/a.jpg")
+        self.assertEqual(result.best.handle, "mamamia1008")
+
+    async def test_url_unavailable_error_is_explicit(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "error": "The URL does not refer to an image, or the image is not publicly accessible.",
+                    "search_information": {"images_results_state": "Fully empty"},
+                },
+            )
+
+        cfg = {
+            "enabled": True,
+            "providers": ["serpapi"],
+            "serpapi_engine": "yandex_images",
+            "max_results": 3,
+            "timeout_sec": 5,
+            "max_image_mb": 8,
+            "safe_search": False,
+        }
+        with patch.object(providers, "_cfg", return_value=cfg), patch.object(
+            secrets, "get", side_effect=lambda key: "k" if key == "SERPAPI_KEY" else ""
+        ):
+            result = await providers.search_image(
+                ["https://example.com/a.jpg"], transport=httpx.MockTransport(handler)
+            )
+        self.assertFalse(result.candidates)
+        self.assertIn("图片地址无法被搜索服务访问", result.errors[0])
 
     async def test_saucenao_fallback_downloads_image(self):
         async def handler(request: httpx.Request) -> httpx.Response:
