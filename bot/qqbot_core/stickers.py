@@ -139,6 +139,26 @@ def _host_allowed(url: str) -> bool:
     return bool(allow) and any(host == a or host.endswith("." + a) for a in allow)
 
 
+# 学习链路里被跳过的原因按「原因 + 细节」去重后只记一次：
+# all_images=true 时每张图都会走一遍，逐条打日志会把 journal 刷满。
+_reject_logged: set[str] = set()
+
+
+def _log_skip(reason: str, detail: str = "") -> None:
+    key = f"{reason}|{detail}"
+    if key in _reject_logged:
+        return
+    _reject_logged.add(key)
+    logger.warning(f"stickers: 跳过学习（{reason}）{detail}".rstrip())
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "?").lower()
+    except ValueError:
+        return "?"
+
+
 def _state_key(group_id: str | None) -> str:
     return str(group_id) if group_id else "private"
 
@@ -325,8 +345,17 @@ async def _download(
     min_bytes: int | None = None,
     timeout: float | None = None,
 ) -> tuple[bytes, str] | None:
+    host = _host_of(url)
     if not _host_allowed(url):
-        logger.debug(f"stickers: 拒绝非白名单图床 {url[:80]}")
+        allow = ", ".join(
+            str(x)
+            for x in (_learn_cfg().get("host_allowlist") or [])
+            if str(x).strip()
+        )
+        _log_skip(
+            "图床不在 host_allowlist",
+            f"host={host} allowlist=[{allow}]（若是 nt.qq.com.cn 形态，需要允许 qq.com.cn）",
+        )
         return None
     cfg = _cfg()
     if max_bytes is None:
@@ -344,21 +373,30 @@ async def _download(
                 resp.raise_for_status()
                 ctype = (resp.headers.get("content-type") or "").split(";")[0].strip()
                 if ctype and not ctype.startswith("image/"):
+                    _log_skip("content-type 不是图片", f"{ctype} host={host}")
                     return None
                 buf = bytearray()
                 async for chunk in resp.aiter_bytes():
                     buf.extend(chunk)
                     if max_bytes and len(buf) > max_bytes:
+                        _log_skip(
+                            "超过 max_bytes",
+                            f"{len(buf)}B > {max_bytes}B host={host}",
+                        )
                         return None
     except (httpx.HTTPError, OSError) as exc:
-        logger.debug(f"stickers: 下载失败 {type(exc).__name__}: {exc}")
+        _log_skip(
+            f"下载失败 {type(exc).__name__}", f"{exc} host={host} url={url[:90]}"
+        )
         return None
 
     if len(buf) < min_bytes:
+        _log_skip("小于 min_bytes", f"{len(buf)}B < {min_bytes}B host={host}")
         return None
     data = bytes(buf)
     mime = sniff_image_mime(data)
     if mime is None:
+        _log_skip("无法识别图片格式", f"头 4 字节={data[:4]!r} host={host}")
         return None
     return data, mime
 
@@ -449,9 +487,15 @@ def observe_message(event: Any, msg_id: int) -> None:
         if not url and stype == "image":
             url = str(data.get("file") or "").strip()
         if not url.startswith(("http://", "https://")):
+            # NapCat 没给可下载地址时这里会空过；mface（收藏/商城表情）通常
+            # 只有 key/emoji_id，属于预期内的跳过，记一次便于区分。
+            _log_skip(
+                "消息段没有可下载的 http(s) url",
+                f"type={stype} 字段={sorted(data)[:6]}",
+            )
             continue
         if not _rate_ok():
-            logger.debug("stickers: 学习速率达上限，跳过")
+            _log_skip("学习速率达上限", f"max_per_minute={learn.get('max_per_minute')}")
             continue
         summary = str(
             data.get("summary") or data.get("emoji_id") or data.get("key") or ""

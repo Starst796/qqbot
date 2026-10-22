@@ -242,8 +242,11 @@ DEFAULTS: dict[str, Any] = {
             "max_library_mb": 500,
             "ignored_groups": [],
             "ignored_users": [],
-            # 只允许从 QQ 图床下载，避免任意 URL / SSRF
-            "host_allowlist": ["qq.com.cn","qpic.cn", "qq.com", "tencent.com"],
+            # 只允许从 QQ 图床下载，避免任意 URL / SSRF。
+            # 注意 `qq.com.cn` 不能少：NapCat 常见的图片地址是
+            # `multimedia.nt.qq.com.cn/download?...`，它只匹配 `qq.com.cn`，
+            # 不匹配 `qq.com`（它以 `.cn` 结尾）；缺了这条所有图片会被静默丢弃。
+            "host_allowlist": ["qq.com.cn", "qpic.cn", "qq.com", "tencent.com"],
         },
         # 用视觉模型给审核通过的图打情绪标签（会产生模型调用；默认关闭）
         "tagging": {"enabled": False},
