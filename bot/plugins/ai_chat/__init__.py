@@ -241,7 +241,7 @@ async def _complete(messages: list[dict], cfg: dict) -> str:
         "messages": messages,
         # DeepSeek 只接受 [0, 2]，越界直接 400
         "temperature": _clamp_number(cfg.get("temperature", 1.0), 1.0, 0.0, 2.0),
-        "max_tokens": int(_clamp_number(cfg.get("max_tokens", 800), 800, 1, 8192)),
+        "max_tokens": int(_clamp_number(cfg.get("max_tokens", 800), 800, 1, 262144)),
     }
     # deepseek-flash 默认开启思考模式；群聊要快，默认关掉（可在线打开）
     if not cfg.get("thinking", False):
@@ -311,7 +311,7 @@ async def _chat_once(
         "model": str(cfg.get("model", "deepseek-flash")),
         "messages": messages,
         "temperature": _clamp_number(cfg.get("temperature", 1.0), 1.0, 0.0, 2.0),
-        "max_tokens": int(_clamp_number(cfg.get("max_tokens", 800), 800, 1, 8192)),
+        "max_tokens": int(_clamp_number(cfg.get("max_tokens", 800), 800, 1, 262144)),
     }
     if not cfg.get("thinking", False):
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
