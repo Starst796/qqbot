@@ -28,7 +28,24 @@ _PLACEHOLDER = {
     "xml": "卡片",
     # reply 段本身不含内容，只是“引用了一条消息”的标记；
     # 被引用的原文由调用方用 reply_ids() 回查，这里不折算成占位符以免污染语义。
+    # at 段单独处理（需要 self_id 才能区分“@你”和“@别人”），见 `_at_label()`。
 }
+
+
+def _at_label(data: dict[str, Any], self_id: str) -> str:
+    """把 `at` 段折成能看出「@的是谁」的短标签。
+
+    这一步很关键：`Message.extract_plain_text()` 只取 text 段，`at` 会被整段丢掉。
+    缺了它，模型在上下文里完全看不出“这句话是在叫谁”，只能默认“大概是在跟我说话”
+    —— 这正是群友互聊时机器人抢着祜认领的根因。
+    """
+    qq = str(data.get("qq") or "").strip()
+    if qq == "all":
+        return "@全体成员"
+    if self_id and qq == str(self_id):
+        return "@你"
+    name = str(data.get("name") or "").strip()
+    return f"@{name}" if name else "@某人"
 
 
 def _segments(message: Any) -> Iterable[Any]:
@@ -55,14 +72,20 @@ def _seg_data(seg: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def placeholders(message: Any) -> str:
+def placeholders(message: Any, self_id: str = "") -> str:
     """把非文本段折算成占位符；没有非文本段时返回空串。
 
     用于纯图片/表情消息也能落库（否则 `content` 为空会被整条丢弃），
     顺带让含图消息在语料里保留"这里有一张图"的信息。
+
+    `self_id` 用于把「@机器人」标成 `@你`，与「@别人」区分开。
     """
     counts: dict[str, int] = {}
     for seg in _segments(message):
+        if _seg_type(seg) == "at":
+            label = _at_label(_seg_data(seg), str(self_id or ""))
+            counts[label] = counts.get(label, 0) + 1
+            continue
         label = _PLACEHOLDER.get(_seg_type(seg))
         if label:
             counts[label] = counts.get(label, 0) + 1

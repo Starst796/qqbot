@@ -585,7 +585,11 @@ async def _should_reply(
         lines.append(f"{who}: {row['content']}")
     current = " ".join(
         part
-        for part in (quoted, event.get_plaintext().strip(), placeholders(event.message))
+        for part in (
+            quoted,
+            event.get_plaintext().strip(),
+            placeholders(event.message, str(event.self_id)),
+        )
         if part
     )
     lines.append(f"{_display_name(event)}: {current}")
@@ -700,7 +704,12 @@ async def _quoted(bot: Bot, event: MessageEvent) -> tuple[str, list[str]]:
         name = _reply_name((data or {}).get("sender"))
 
     body = " ".join(
-        part for part in (quoted.extract_plain_text().strip(), placeholders(quoted)) if part
+        part
+        for part in (
+            quoted.extract_plain_text().strip(),
+            placeholders(quoted, str(getattr(event, "self_id", "") or "")),
+        )
+        if part
     )
     return f"引用 {name}：{body or '（空消息）'}", image_sources(quoted)
 
@@ -772,6 +781,54 @@ async def _style_block(group_id: str, question: str, style_cfg: dict) -> str:
     )
 
 
+_AMBIENT_HEADER = (
+    "\n\n【本群最近的发言（时间正序）】\n"
+    "注意：这些多数是群友之间的对话，**只有带「@你」的才是在叫你**。"
+    "不要假设别人在跟你说话；与你无关的就别接。\n"
+)
+
+
+def _ambient_block(event: MessageEvent, limit: int) -> str:
+    """本群最近 N 条原始发言，让模型看到「没在跟自己说话」的那部分对话。
+
+    * 与 `sessions` 互补：那边只有 bot 参与过的轮次，这里补上群友互聊。
+    * 每条带说话人名；`at` 已在落库时折成 `@你` / `@某人`，模型据此判断谁在叫谁。
+    * 当前这条消息通常还没落库（ai_chat 优先级高于 msg_store），仍做一次去重兜底。
+    """
+    if limit <= 0 or not isinstance(event, GroupMessageEvent):
+        return ""
+    rows = db.recent_messages(str(event.group_id), limit=limit + 1)
+    if not rows:
+        return ""
+    current = " ".join(
+        part
+        for part in (
+            event.get_plaintext().strip(),
+            placeholders(event.message, str(event.self_id)),
+        )
+        if part
+    )
+    lines: list[str] = []
+    total = 0
+    for row in reversed(rows):
+        text = str(row.get("content") or "").strip()
+        if not text or text == current:
+            continue
+        who = (
+            "机器人"
+            if row.get("is_bot")
+            else (row.get("nickname") or row.get("user_id") or "群友")
+        )
+        line = f"- {who}: {text[:200]}"
+        total += len(line)
+        if total > 1600:
+            break
+        lines.append(line)
+    if not lines:
+        return ""
+    return _AMBIENT_HEADER + "\n".join(lines)
+
+
 async def _build_messages(
     event: MessageEvent, question: str, images: list[str] | None = None
 ) -> list[dict]:
@@ -781,6 +838,11 @@ async def _build_messages(
     style_cfg = cfg.get("style", {}) or {}
     if style_cfg.get("enabled", True) and isinstance(event, GroupMessageEvent):
         system += await _style_block(str(event.group_id), question, style_cfg)
+
+    # 群友之间的原始发言（P1）。放在格式约束之前，让 _FORMAT_HINT 仍然最后生效。
+    ambient = _ambient_block(event, int(style_cfg.get("recent_messages", 0) or 0))
+    if ambient:
+        system += ambient
 
     # 输出格式约束放在最后（最显眼），且明确声明覆盖人设里的格式要求。
     # 不写在这里而是运行时追加的原因：用户自定义的人设提示词往往写着“一行一句”，
@@ -1078,7 +1140,14 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
                 )
 
         # 上下文里给图片留个占位，免得下一轮看起来像是凭空冒出一句话
-        recorded = " ".join(part for part in (question, placeholders(event.message)) if part)
+        recorded = " ".join(
+            part
+            for part in (
+                question,
+                placeholders(event.message, str(event.self_id)),
+            )
+            if part
+        )
         db.add_session(_conv_key(event), "user", f"{_display_name(event)}: {recorded}")
         if answer:
             db.add_session(_conv_key(event), "assistant", answer)

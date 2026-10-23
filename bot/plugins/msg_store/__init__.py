@@ -22,7 +22,11 @@ matcher = on_message(priority=100, block=False)
 async def _store(event: MessageEvent) -> None:
     storage = config.get("storage", {}) or {}
     text = event.get_plaintext().strip()
-    content = " ".join(part for part in (text, placeholders(event.message)) if part)
+    content = " ".join(
+        part
+        for part in (text, placeholders(event.message, str(event.self_id)))
+        if part
+    )
     if not content:
         return
 
