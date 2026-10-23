@@ -38,7 +38,13 @@ from nonebot.adapters.onebot.v11 import (
 )
 
 from qqbot_core import activity, config, db, stickers, tools, vision_context
-from qqbot_core.media import fetch_data_uri, image_sources, placeholders, reply_ids
+from qqbot_core.media import (
+    fetch_data_uri,
+    image_sources,
+    is_placeholder_only,
+    placeholders,
+    reply_ids,
+)
 
 driver = get_driver()
 
@@ -580,9 +586,18 @@ async def _should_reply(
     lines: list[str] = []
     # ai_chat 优先级高于 msg_store，当前这条还没落库，因此单独补在最后
     context = int(sem.get("context_messages", 8))
+    skipped = 0
     for row in reversed(db.recent_messages(group_id, limit=context)):
+        body = str(row["content"] or "")
+        # 纯占位符（[图片] / [文件] / [卡片]）不构成话题，堆在里面只会把真正
+        # 有信息的那几句冲淡，还会诱使判定器“看到一张图就想接”
+        if is_placeholder_only(body):
+            skipped += 1
+            continue
         who = "机器人" if row["is_bot"] else (row["nickname"] or row["user_id"])
-        lines.append(f"{who}: {row['content']}")
+        lines.append(f"{who}: {body}")
+    if skipped:
+        lines.insert(0, f"（此前有 {skipped} 条纯图片/文件消息，已省略）")
     current = " ".join(
         part
         for part in (
@@ -619,9 +634,15 @@ async def _should_reply(
         "你在为群聊机器人做「要不要接话」的判定：输出 1 = 这句话值得接一句，输出 0 = 不接。\n"
         f"输出 1 的典型情况：{'、'.join(rules)}。\n"
         f"{alias_line}"
+        "【怎么算在叫机器人】只有真正的 @ 才会在上下文里写成「@你」；"
+        "写到别处的「@某人」、手打的 @ 符号、@别人的消息 都**不是在叫机器人**。\n"
+        "【硬信号】这条消息里出现「@某人」而没有「@你」→ 几乎肯定是在叫别人，输出 0；"
+        "文本里手打的 @ 后面跟的不是机器人的名字/别名 → 同样输出 0。\n"
+        "【多数消息不是在跟机器人说话】群里有几十个人，大部分话是群友之间的对话；"
+        "你没把握是冲机器人来的，就输出 0。\n"
         "输出 0 的典型情况：刷屏连发、广告引流、纯图片或表情且无人提问、对骂脏话、"
         "机器人刚在同一个话题里说过话、与你完全无关的两人之间的寒暄。\n"
-        "倾向是「有话可接就接」，但明显不该插嘴的不要接。\n"
+        "倾向是有好接的梗才插一句，宁可少接也不要硬接。\n"
         "只输出一个字符 1 或 0，不要解释。"
     )
     user = "群内最近消息（时间正序）：\n" + "\n".join(lines)
@@ -641,8 +662,9 @@ async def _should_reply(
         return False
     verdict = (resp.choices[0].message.content or "").strip()
     if verdict.startswith("1"):
+        logger.info(f"ai_chat: 判定=接（{len(lines)} 行上下文）")
         return True
-    logger.debug(f"ai_chat: 判定为不接话（{verdict[:12]!r}）")
+    logger.info(f"ai_chat: 判定=不接（{verdict[:12]!r}）")
     return False
 
 
@@ -813,6 +835,9 @@ def _ambient_block(event: MessageEvent, limit: int) -> str:
     for row in reversed(rows):
         text = str(row.get("content") or "").strip()
         if not text or text == current:
+            continue
+        # 纯占位符行（[图片]/[文件]）对“谁在跟谁说话”没有信息量，跳过
+        if is_placeholder_only(text):
             continue
         who = (
             "机器人"
@@ -1160,3 +1185,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         await _limiter.release()
 
     await _reply(bot, event, answer or "", sticker_row)
+    if isinstance(event, GroupMessageEvent):
+        # 记录这次是「被点名」还是「自己插话」，方便事后回看为什么开口
+        logger.info(
+            f"ai_chat: 已回复（{'被点名' if _addressed(event) else '主动接话'}）"
+        )
